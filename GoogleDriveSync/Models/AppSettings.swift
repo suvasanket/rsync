@@ -1,8 +1,9 @@
 //
 //  AppSettings.swift
-//  DriveSync
+//  rsync
 //
 //  Created by saihgupr on 2024-12-11.
+//  Updated on 2026-09-25.
 //
 
 import Foundation
@@ -21,7 +22,7 @@ enum SyncInterval: Codable, Equatable, Hashable, CaseIterable {
     
     var displayName: String {
         switch self {
-        case .manual: return "Manual Only"
+        case .manual: return "Manual / Off"
         case .minutes15: return "Every 15 minutes"
         case .minutes30: return "Every 30 minutes"
         case .hourly: return "Every Hour"
@@ -49,8 +50,12 @@ struct AppSettings: Codable, Equatable {
     var notifyOnError: Bool
     var launchAtLogin: Bool
     var syncOnLaunch: Bool
-    var dailySyncTime: Date  // Time of day for daily syncs (only hour/minute matter)
-    var checkUpdatesAutomatically: Bool
+    var dailySyncTime: Date
+    var watchForChanges: Bool
+    var debounceDelaySeconds: Double
+    var syncOnFirstConnection: Bool
+    var configFilePath: String
+    var configDirectoryPath: String
     
     static let defaultRclonePath = "/opt/homebrew/bin/rclone"
     static let intelRclonePath = "/usr/local/bin/rclone"
@@ -64,14 +69,18 @@ struct AppSettings: Codable, Equatable {
     }
     
     init(
-        syncInterval: SyncInterval = .hourly,
+        syncInterval: SyncInterval = .manual,
         rclonePath: String = AppSettings.defaultRclonePath,
         showNotifications: Bool = true,
         notifyOnError: Bool = true,
         launchAtLogin: Bool = false,
         syncOnLaunch: Bool = true,
         dailySyncTime: Date? = nil,
-        checkUpdatesAutomatically: Bool = true
+        watchForChanges: Bool = true,
+        debounceDelaySeconds: Double = 2.0,
+        syncOnFirstConnection: Bool = true,
+        configFilePath: String = "~/.rsync/config.json",
+        configDirectoryPath: String = "~/.rsync"
     ) {
         self.syncInterval = syncInterval
         self.rclonePath = rclonePath
@@ -80,7 +89,42 @@ struct AppSettings: Codable, Equatable {
         self.launchAtLogin = launchAtLogin
         self.syncOnLaunch = syncOnLaunch
         self.dailySyncTime = dailySyncTime ?? AppSettings.defaultDailySyncTime
-        self.checkUpdatesAutomatically = checkUpdatesAutomatically
+        self.watchForChanges = watchForChanges
+        self.debounceDelaySeconds = debounceDelaySeconds
+        self.syncOnFirstConnection = syncOnFirstConnection
+        self.configFilePath = configFilePath
+        self.configDirectoryPath = configDirectoryPath
+    }
+    
+    enum CodingKeys: String, CodingKey {
+        case syncInterval
+        case rclonePath
+        case showNotifications
+        case notifyOnError
+        case launchAtLogin
+        case syncOnLaunch
+        case dailySyncTime
+        case watchForChanges
+        case debounceDelaySeconds
+        case syncOnFirstConnection
+        case configFilePath
+        case configDirectoryPath
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.syncInterval = try container.decodeIfPresent(SyncInterval.self, forKey: .syncInterval) ?? .manual
+        self.rclonePath = try container.decodeIfPresent(String.self, forKey: .rclonePath) ?? AppSettings.defaultRclonePath
+        self.showNotifications = try container.decodeIfPresent(Bool.self, forKey: .showNotifications) ?? true
+        self.notifyOnError = try container.decodeIfPresent(Bool.self, forKey: .notifyOnError) ?? true
+        self.launchAtLogin = try container.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false
+        self.syncOnLaunch = try container.decodeIfPresent(Bool.self, forKey: .syncOnLaunch) ?? true
+        self.dailySyncTime = try container.decodeIfPresent(Date.self, forKey: .dailySyncTime) ?? AppSettings.defaultDailySyncTime
+        self.watchForChanges = try container.decodeIfPresent(Bool.self, forKey: .watchForChanges) ?? true
+        self.debounceDelaySeconds = try container.decodeIfPresent(Double.self, forKey: .debounceDelaySeconds) ?? 2.0
+        self.syncOnFirstConnection = try container.decodeIfPresent(Bool.self, forKey: .syncOnFirstConnection) ?? true
+        self.configFilePath = try container.decodeIfPresent(String.self, forKey: .configFilePath) ?? "~/.rsync/config.json"
+        self.configDirectoryPath = try container.decodeIfPresent(String.self, forKey: .configDirectoryPath) ?? "~/.rsync"
     }
     
     static func detectRclonePath() -> String? {
@@ -91,9 +135,10 @@ struct AppSettings: Codable, Equatable {
         
         // 2. Check common system locations
         let paths = [
-            intelRclonePath,        // Intel Homebrew
-            "/usr/bin/rclone",      // System
-            "/opt/local/bin/rclone" // MacPorts
+            "/opt/homebrew/bin/rclone", // Apple Silicon Homebrew
+            intelRclonePath,            // Intel Homebrew
+            "/usr/bin/rclone",          // System
+            "/opt/local/bin/rclone"     // MacPorts
         ]
         
         for path in paths {

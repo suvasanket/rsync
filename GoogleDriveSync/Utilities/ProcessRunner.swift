@@ -1,8 +1,9 @@
 //
 //  ProcessRunner.swift
-//  DriveSync
+//  GoogleDriveSync
 //
 //  Created by saihgupr on 2024-12-11.
+//  Optimized for low RAM usage on 2026-09-25.
 //
 
 import Foundation
@@ -20,6 +21,33 @@ struct ProcessResult {
         self.stderr = stderr
         self.exitCode = exitCode
         self.wasCancelled = wasCancelled
+    }
+}
+
+/// Thread-safe capped buffer that retains the most recent output bytes to prevent RAM leaks during long operations.
+private final class TailBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var buffer = ""
+    private let maxCapacity: Int
+    
+    init(maxCapacity: Int = 16384) {
+        self.maxCapacity = maxCapacity
+    }
+    
+    func append(_ string: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        buffer.append(string)
+        if buffer.count > maxCapacity {
+            let overflow = buffer.count - maxCapacity
+            buffer.removeFirst(overflow)
+        }
+    }
+    
+    var content: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return buffer
     }
 }
 
@@ -90,13 +118,12 @@ actor ProcessRunner {
         }
     }
     
-    /// Run a command with real-time output streaming (cancellable)
+    /// Run a command with real-time output streaming (cancellable and memory-capped)
     func runWithProgress(
         _ executablePath: String,
         arguments: [String] = [],
         onOutput: @escaping @Sendable (String) -> Void
     ) async throws -> ProcessResult {
-        // Create the process
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executablePath)
         process.arguments = arguments
@@ -111,21 +138,39 @@ actor ProcessRunner {
                 process.standardOutput = stdoutPipe
                 process.standardError = stderrPipe
                 
-                var allStdout = ""
-                var allStderr = ""
+                // Memory-capped tail buffers (16KB max each)
+                let stdoutBuffer = TailBuffer(maxCapacity: 16384)
+                let stderrBuffer = TailBuffer(maxCapacity: 16384)
+                
+                var lastOutputTime = Date.distantPast
+                var lastStreamedString = ""
+                let outputLock = NSLock()
                 
                 stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
                     let data = handle.availableData
+                    guard !data.isEmpty else { return }
                     if let str = String(data: data, encoding: .utf8), !str.isEmpty {
-                        allStdout += str
-                        onOutput(str)
+                        stdoutBuffer.append(str)
+                        
+                        // Throttle streaming callbacks to avoid flooding the main actor / UI run loop
+                        outputLock.lock()
+                        let now = Date()
+                        lastStreamedString = str
+                        if now.timeIntervalSince(lastOutputTime) >= 0.15 {
+                            lastOutputTime = now
+                            outputLock.unlock()
+                            onOutput(str)
+                        } else {
+                            outputLock.unlock()
+                        }
                     }
                 }
                 
                 stderrPipe.fileHandleForReading.readabilityHandler = { handle in
                     let data = handle.availableData
+                    guard !data.isEmpty else { return }
                     if let str = String(data: data, encoding: .utf8), !str.isEmpty {
-                        allStderr += str
+                        stderrBuffer.append(str)
                     }
                 }
                 
@@ -137,23 +182,31 @@ actor ProcessRunner {
                     stdoutPipe.fileHandleForReading.readabilityHandler = nil
                     stderrPipe.fileHandleForReading.readabilityHandler = nil
                     
-                    // Check if it was terminated (cancelled)
+                    // Emit last piece of output if any so final percentage is received
+                    outputLock.lock()
+                    let finalStr = lastStreamedString
+                    outputLock.unlock()
+                    if !finalStr.isEmpty {
+                        onOutput(finalStr)
+                    }
+                    
                     let wasCancelled = process.terminationReason == .uncaughtSignal
                     
                     let result = ProcessResult(
-                        stdout: allStdout.trimmingCharacters(in: .whitespacesAndNewlines),
-                        stderr: allStderr.trimmingCharacters(in: .whitespacesAndNewlines),
+                        stdout: stdoutBuffer.content.trimmingCharacters(in: .whitespacesAndNewlines),
+                        stderr: stderrBuffer.content.trimmingCharacters(in: .whitespacesAndNewlines),
                         exitCode: process.terminationStatus,
                         wasCancelled: wasCancelled
                     )
                     
-                    // Clear current process reference
                     Task {
                         await self?.clearCurrentProcess()
                     }
                     
                     continuation.resume(returning: result)
                 } catch {
+                    stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                    stderrPipe.fileHandleForReading.readabilityHandler = nil
                     Task {
                         await self?.clearCurrentProcess()
                     }

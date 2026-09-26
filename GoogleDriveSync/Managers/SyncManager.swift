@@ -1,9 +1,9 @@
 //
 //  SyncManager.swift
-//  DriveSync
+//  rsync
 //
 //  Created by saihgupr on 2024-12-11.
-//  Edited by MichasCoup on 2026-07-26.
+//  Updated with dotfile persistence, network monitor, and bi-sync on first connection on 2026-09-25.
 //
 
 import Foundation
@@ -14,16 +14,6 @@ import ServiceManagement
 @MainActor
 class SyncManager: ObservableObject {
     
-    struct GitHubRelease: Codable {
-        let tagName: String
-        let htmlUrl: String
-        
-        enum CodingKeys: String, CodingKey {
-            case tagName = "tag_name"
-            case htmlUrl = "html_url"
-        }
-    }
-
     // MARK: - Published State
     
     @Published var folders: [SyncFolder] = []
@@ -37,10 +27,11 @@ class SyncManager: ObservableObject {
     @Published var syncProgress: String = ""
     @Published var syncProgressPercent: Double? = nil  // 0.0 to 1.0
     @Published private(set) var syncCancelled: Bool = false
+    @Published var isWatching: Bool = false
+    @Published var isOnline: Bool = true
     
     // MARK: - Computed Properties
     
-    /// Enabled folders only (for UI display)
     var enabledFolders: [SyncFolder] {
         folders.filter { $0.isEnabled }
     }
@@ -48,10 +39,14 @@ class SyncManager: ObservableObject {
     var statusIcon: String {
         if !isRcloneInstalled {
             return "exclamationmark.icloud"
+        } else if !isOnline {
+            return "cloud.slash"
         } else if isSyncing {
             return "arrow.triangle.2.circlepath.icloud"
         } else if enabledFolders.contains(where: { $0.lastSyncStatus == .error }) {
             return "xmark.icloud"
+        } else if settings.watchForChanges && !enabledFolders.isEmpty {
+            return "bolt.horizontal.icloud"
         } else {
             return "checkmark.icloud"
         }
@@ -60,6 +55,8 @@ class SyncManager: ObservableObject {
     var statusText: String {
         if !isRcloneInstalled {
             return "rclone not installed"
+        } else if !isOnline {
+            return "Offline (Sync paused)"
         } else if isSyncing {
             if let folder = currentSyncFolder {
                 return "Syncing \(folder.displayName)..."
@@ -69,6 +66,13 @@ class SyncManager: ObservableObject {
             let errorCount = enabledFolders.filter { $0.lastSyncStatus == .error }.count
             if errorCount > 0 {
                 return "\(errorCount) folder\(errorCount == 1 ? "" : "s") failed to sync"
+            } else if settings.watchForChanges && !enabledFolders.isEmpty {
+                if let lastSync = lastSyncDate {
+                    let formatter = RelativeDateTimeFormatter()
+                    formatter.unitsStyle = .abbreviated
+                    return "Watching • Last sync: \(formatter.localizedString(for: lastSync, relativeTo: Date()))"
+                }
+                return "Watching for changes"
             } else if let lastSync = lastSyncDate {
                 let formatter = RelativeDateTimeFormatter()
                 formatter.unitsStyle = .abbreviated
@@ -83,76 +87,220 @@ class SyncManager: ObservableObject {
     
     private var rclone: RcloneWrapper!
     private var syncTimer: Timer?
-    private let userDefaultsKey = "DriveSync.Folders"
-    private let settingsKey = "DriveSync.Settings"
+    private var watchers: [UUID: FolderWatcher] = [:]
+    private var pendingSyncFolderIDs = Set<UUID>()
+    private let configStore = ConfigStore.shared
+    private let networkMonitor = NetworkMonitor.shared
     
     // MARK: - Initialization
     
     init() {
-        // Load settings first
-        if let data = UserDefaults.standard.data(forKey: settingsKey),
-           var savedSettings = try? JSONDecoder().decode(AppSettings.self, from: data) {
-            // Always check if there's a bundled rclone path that should override or update the saved one
-            if let bundledPath = AppSettings.detectRclonePath() {
-                savedSettings.rclonePath = bundledPath
-            }
-            self.settings = savedSettings
-        } else {
-            // Auto-detect rclone path (defaults to bundle if present)
-            let detectedPath = AppSettings.detectRclonePath() ?? AppSettings.defaultRclonePath
-            self.settings = AppSettings(rclonePath: detectedPath)
+        let (loadedSettings, loadedFolders) = configStore.load()
+        self.settings = loadedSettings
+        self.folders = loadedFolders
+        self.isOnline = networkMonitor.isConnected
+        
+        // Auto-detect rclone if current path doesn't exist
+        if !FileManager.default.fileExists(atPath: self.settings.rclonePath),
+           let detected = AppSettings.detectRclonePath() {
+            self.settings.rclonePath = detected
         }
         
-        // Now initialize rclone with settings
         self.rclone = RcloneWrapper(rclonePath: self.settings.rclonePath)
         
-        // Load folders
-        loadFolders()
+        setupNetworkObserver()
         
-        // Initial setup
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                print("SyncManager: Application will terminate. Flushing configurations to dotfile...")
+                self?.saveFolders()
+                self?.saveSettings()
+            }
+        }
+        
         Task {
             await checkRcloneInstallation()
             await refreshRemotes()
             scheduleSync()
+            refreshWatchers()
             
-            if settings.syncOnLaunch && !folders.isEmpty {
+            if settings.syncOnLaunch && !folders.isEmpty && isOnline {
                 await syncAll()
             }
-            
-            if settings.checkUpdatesAutomatically {
-                performAutomaticUpdateCheck()
+        }
+    }
+    
+    // MARK: - Network Observer
+    
+    private func setupNetworkObserver() {
+        networkMonitor.onConnectivityChange = { [weak self] online, isFirstOnline in
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.isOnline = online
+                
+                if online {
+                    print("SyncManager: Network online.")
+                    if isFirstOnline && self.settings.syncOnFirstConnection {
+                        await self.performFirstConnectionSync()
+                    }
+                    self.processNextPendingSync()
+                } else {
+                    print("SyncManager: Network offline. Pausing active syncs.")
+                    if self.isSyncing {
+                        self.cancelSync()
+                    }
+                }
             }
         }
     }
     
-    // MARK: - Persistence
-    
-    private func loadFolders() {
-        if let data = UserDefaults.standard.data(forKey: userDefaultsKey),
-           let savedFolders = try? JSONDecoder().decode([SyncFolder].self, from: data) {
-            self.folders = savedFolders
+    private func performFirstConnectionSync() async {
+        print("SyncManager: Running initial sync on first connection for bi-sync folders...")
+        let targets = folders.filter { $0.isEnabled && $0.syncMode == .bisync && $0.syncOnFirstConnection }
+        for folder in targets {
+            guard !syncCancelled && isOnline else { break }
+            await syncFolder(folder)
         }
     }
     
+    // MARK: - Persistence (Dotfile ~/.rsync/config.json)
+    
     func saveFolders() {
-        if let data = try? JSONEncoder().encode(folders) {
-            UserDefaults.standard.set(data, forKey: userDefaultsKey)
-        }
+        configStore.save(settings: settings, folders: folders)
+        refreshWatchers()
     }
     
     func saveSettings() {
-        if let data = try? JSONEncoder().encode(settings) {
-            UserDefaults.standard.set(data, forKey: settingsKey)
+        configStore.save(settings: settings, folders: folders)
+        rclone = RcloneWrapper(rclonePath: settings.rclonePath)
+        updateLaunchAtLogin()
+        scheduleSync()
+        refreshWatchers()
+    }
+    
+    /// Change the configuration directory to a user-chosen path
+    func changeConfigDirectory(to newURL: URL) async {
+        do {
+            try configStore.changeConfigDirectory(to: newURL)
+            let (newSettings, newFolders) = configStore.load()
+            self.settings = newSettings
+            self.folders = newFolders
+            self.rclone = RcloneWrapper(rclonePath: self.settings.rclonePath)
+            await refreshRemotes()
+            refreshWatchers()
+            saveSettings()
+            saveFolders()
+        } catch {
+            print("SyncManager: Error changing config directory: \(error)")
+        }
+    }
+    
+    /// Reset the configuration directory back to ~/.rsync
+    func resetConfigDirectory() async {
+        do {
+            try configStore.resetToDefaultDirectory()
+            let (newSettings, newFolders) = configStore.load()
+            self.settings = newSettings
+            self.folders = newFolders
+            self.rclone = RcloneWrapper(rclonePath: self.settings.rclonePath)
+            await refreshRemotes()
+            refreshWatchers()
+            saveSettings()
+            saveFolders()
+        } catch {
+            print("SyncManager: Error resetting config directory: \(error)")
+        }
+    }
+    
+    // MARK: - File Watcher Management (Native FSEvents)
+    
+    func refreshWatchers() {
+        guard settings.watchForChanges else {
+            stopAllWatchers()
+            isWatching = false
+            return
         }
         
-        // Update rclone wrapper with new path
-        rclone = RcloneWrapper(rclonePath: settings.rclonePath)
+        let enabledIDs = Set(folders.filter { $0.isEnabled }.map { $0.id })
         
-        // Update launch at login
-        updateLaunchAtLogin()
+        for (id, watcher) in watchers where !enabledIDs.contains(id) {
+            watcher.stop()
+            watchers.removeValue(forKey: id)
+        }
         
-        // Restart timer with new interval
-        scheduleSync()
+        for folder in folders where folder.isEnabled {
+            let resolved = resolveLocalPath(folder.localPath)
+            guard FileManager.default.fileExists(atPath: resolved) else { continue }
+            
+            if let existing = watchers[folder.id], existing.path == resolved {
+                continue
+            }
+            
+            watchers[folder.id]?.stop()
+            
+            let watcher = FolderWatcher(
+                folderId: folder.id,
+                path: resolved,
+                ignoredPatterns: folder.ignoredPatterns,
+                debounceDelay: settings.debounceDelaySeconds
+            ) { [weak self] in
+                Task { @MainActor in
+                    self?.handleWatchedFolderChange(folderId: folder.id)
+                }
+            }
+            
+            watchers[folder.id] = watcher
+            watcher.start()
+        }
+        
+        isWatching = !watchers.isEmpty
+    }
+    
+    private func stopAllWatchers() {
+        for (_, watcher) in watchers {
+            watcher.stop()
+        }
+        watchers.removeAll()
+        isWatching = false
+    }
+    
+    private func handleWatchedFolderChange(folderId: UUID) {
+        guard let folder = folders.first(where: { $0.id == folderId && $0.isEnabled }) else { return }
+        
+        guard isOnline else {
+            print("SyncManager: Network offline. Queuing change for \(folder.displayName) without spawning processes.")
+            pendingSyncFolderIDs.insert(folderId)
+            return
+        }
+        
+        if isSyncing {
+            print("SyncManager: Folder \(folder.displayName) change queued (sync active)")
+            pendingSyncFolderIDs.insert(folderId)
+        } else {
+            print("SyncManager: Change detected in \(folder.displayName). Triggering sync...")
+            Task {
+                await syncFolder(folder)
+                processNextPendingSync()
+            }
+        }
+    }
+    
+    private func processNextPendingSync() {
+        guard isOnline, !isSyncing, let nextFolderId = pendingSyncFolderIDs.popFirst() else { return }
+        guard let folder = folders.first(where: { $0.id == nextFolderId && $0.isEnabled }) else {
+            processNextPendingSync()
+            return
+        }
+        
+        Task {
+            print("SyncManager: Processing queued sync for \(folder.displayName)...")
+            await syncFolder(folder)
+            processNextPendingSync()
+        }
     }
     
     // MARK: - rclone Management
@@ -170,36 +318,30 @@ class SyncManager: ObservableObject {
     
     func refreshRemotes() async {
         guard isRcloneInstalled else { return }
-        
         do {
-            // We now support all remotes, not just drive
             availableRemotes = try await rclone.listRemotes()
         } catch {
             print("Failed to list remotes: \(error)")
         }
     }
     
-    /// Adds a new Google Drive remote using the in-app browser flow
+    /// Adds a new Google Drive remote using in-app browser OAuth flow
     func addNewDriveRemote(name: String) async throws {
         try await rclone.createDriveAccount(name: name)
         await refreshRemotes()
     }
     
-    // Quick setup removed in favor of generic support
-    
-    /// Rename a remote to a user-friendly name
+    /// Rename a remote
     func renameRemote(from oldName: String, to newName: String) async -> Bool {
         do {
             try await rclone.renameRemote(from: oldName, to: newName)
             await refreshRemotes()
             
-            // Update any existing folders that use this remote
             for index in folders.indices where folders[index].remoteName == oldName {
                 folders[index].remoteName = newName
                 folders[index].bisyncState = .uninitialized
             }
             saveFolders()
-            
             return true
         } catch {
             print("Failed to rename remote: \(error)")
@@ -212,8 +354,6 @@ class SyncManager: ObservableObject {
         do {
             try await rclone.deleteRemote(name: name)
             await refreshRemotes()
-            
-            // Remove any folders that use this remote
             folders.removeAll { $0.remoteName == name }
             saveFolders()
         } catch {
@@ -223,26 +363,18 @@ class SyncManager: ObservableObject {
     
     /// Reset all app data and settings
     func resetAllSettings() {
-        // Clear properties
+        stopAllWatchers()
         folders.removeAll()
         availableRemotes.removeAll()
+        pendingSyncFolderIDs.removeAll()
         
-        // Clear UserDefaults
-        UserDefaults.standard.removeObject(forKey: userDefaultsKey)
-        UserDefaults.standard.removeObject(forKey: settingsKey)
-        
-        // Re-initialize settings to defaults
         let detectedPath = AppSettings.detectRclonePath() ?? AppSettings.defaultRclonePath
         self.settings = AppSettings(rclonePath: detectedPath)
-        
-        // Update rclone wrapper
         self.rclone = RcloneWrapper(rclonePath: self.settings.rclonePath)
         
-        // Save initial state
         saveSettings()
         saveFolders()
         
-        // Refresh remotes
         Task {
             await checkRcloneInstallation()
             await refreshRemotes()
@@ -255,29 +387,29 @@ class SyncManager: ObservableObject {
         localPath: String,
         remoteName: String,
         remotePath: String = "",
-        syncMode: SyncMode = .sync
+        syncMode: SyncMode = .sync,
+        syncOnFirstConnection: Bool = true
     ) {
         let folder = SyncFolder(
             localPath: localPath,
             remoteName: remoteName,
             remotePath: remotePath,
-            syncMode: syncMode
+            syncMode: syncMode,
+            syncOnFirstConnection: syncOnFirstConnection
         )
         folders.append(folder)
         saveFolders()
     }
     
     func removeFolder(_ folder: SyncFolder) {
+        watchers[folder.id]?.stop()
+        watchers.removeValue(forKey: folder.id)
         folders.removeAll { $0.id == folder.id }
         saveFolders()
     }
     
     func updateFolder(_ folder: SyncFolder) {
-        guard let index = folders.firstIndex(where: {
-            $0.id == folder.id
-        }) else {
-            return
-        }
+        guard let index = folders.firstIndex(where: { $0.id == folder.id }) else { return }
 
         let oldFolder = folders[index]
         var updatedFolder = folder
@@ -297,62 +429,23 @@ class SyncManager: ObservableObject {
         saveFolders()
     }
     
-    /// Open the folder in the provider's web interface (if supported) or just open the browser
-    func openRemoteFolder(_ folder: SyncFolder) async {
-        // Attempt to guess the web URL based on remote type
-        // This is non-trivial for generic remotes.
-        // For now, we'll try to support Drive if possible, or just fail gracefully.
-        
-        guard let remote = availableRemotes.first(where: { $0.name == folder.remoteName }) else { return }
-        
-        if remote.type == "drive" {
-            // Google Drive specific logic
-            if let folderID = await rclone.getFolderID(remote: folder.remoteName, path: folder.remotePath) {
-                var urlString: String
-                if folderID == "root" {
-                     urlString = "https://drive.google.com/drive/my-drive"
-                } else {
-                     urlString = "https://drive.google.com/drive/folders/\(folderID)"
-                }
-                 if let encodedEmail = folder.remoteName.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
-                    urlString += "?authuser=\(encodedEmail)"
-                }
-                
-                if let url = URL(string: urlString) {
-                    await MainActor.run { _ = NSWorkspace.shared.open(url) }
-                }
-            }
-        } else if remote.type == "dropbox" {
-            // Basic Dropbox support could go here
-             if let url = URL(string: "https://www.dropbox.com/home") {
-                await MainActor.run { _ = NSWorkspace.shared.open(url) }
-             }
-        } else {
-             // Generic fallback
-        }
-    }
-    
     // MARK: - Sync Operations
     
     func syncAll() async {
+        guard isOnline else {
+            print("SyncManager: Network offline, skipping syncAll.")
+            return
+        }
         guard !isSyncing else { return }
         syncCancelled = false
         isSyncing = true
 
-        let folderIDs = folders
-            .filter { $0.isEnabled }
-            .map { $0.id }
+        let folderIDs = folders.filter { $0.isEnabled }.map { $0.id }
 
         for folderID in folderIDs {
-            guard !syncCancelled else {
-                break
-            }
+            guard !syncCancelled && isOnline else { break }
 
-            guard let index = folders.firstIndex(where: {
-                $0.id == folderID
-            }) else {
-                continue
-            }
+            guard let index = folders.firstIndex(where: { $0.id == folderID }) else { continue }
 
             currentSyncFolder = folders[index]
             folders[index].lastSyncStatus = .syncing
@@ -362,8 +455,6 @@ class SyncManager: ObservableObject {
             let ignoredPatterns = folders[index].ignoredPatterns
             let syncMode = folders[index].syncMode
             let bisyncState = folders[index].bisyncState
-
-            // Resolve the actual local path (handling Volume-1 issues)
             let resolvedPath = resolveLocalPath(localPath)
 
             do {
@@ -377,11 +468,8 @@ class SyncManager: ObservableObject {
                         ignoredPatterns: ignoredPatterns
                     ) { [weak self] progress in
                         Task { @MainActor in
-                            self?.syncProgress =
-                                self?.simplifyProgress(progress) ?? progress
-
-                            self?.syncProgressPercent =
-                                self?.parseProgressPercent(from: progress)
+                            self?.syncProgress = self?.simplifyProgress(progress) ?? progress
+                            self?.syncProgressPercent = self?.parseProgressPercent(from: progress)
                         }
                     }
 
@@ -400,30 +488,15 @@ class SyncManager: ObservableObject {
                         mode: mode
                     ) { [weak self] progress in
                         Task { @MainActor in
-                            self?.syncProgress =
-                                self?.simplifyProgress(progress) ?? progress
-
-                            self?.syncProgressPercent =
-                                self?.parseProgressPercent(from: progress)
+                            self?.syncProgress = self?.simplifyProgress(progress) ?? progress
+                            self?.syncProgressPercent = self?.parseProgressPercent(from: progress)
                         }
                     }
                 }
 
-                // The array may have changed during await,
-                // so resolve the index again.
-                guard let currentIndex = folders.firstIndex(where: {
-                    $0.id == folderID
-                }) else {
-                    continue
-                }
+                guard let currentIndex = folders.firstIndex(where: { $0.id == folderID }) else { continue }
 
-                let configurationUnchanged =
-                    folders[currentIndex].localPath == localPath &&
-                    folders[currentIndex].fullRemotePath == remotePath &&
-                    folders[currentIndex].ignoredPatterns == ignoredPatterns &&
-                    folders[currentIndex].syncMode == syncMode
-
-                if result.success && syncMode == .bisync && configurationUnchanged {
+                if result.success && syncMode == .bisync {
                     folders[currentIndex].bisyncState = .ready
                 }
 
@@ -432,29 +505,15 @@ class SyncManager: ObservableObject {
                 folders[currentIndex].lastError = nil
 
             } catch {
-                // The array may also have changed when an error
-                // occurred during the awaited operation.
-                guard let currentIndex = folders.firstIndex(where: {
-                    $0.id == folderID
-                }) else {
-                    continue
-                }
+                guard let currentIndex = folders.firstIndex(where: { $0.id == folderID }) else { continue }
 
                 if syncCancelled {
                     folders[currentIndex].lastSyncStatus = .idle
                     folders[currentIndex].lastError = nil
                 } else {
-                    let configurationUnchanged =
-                        folders[currentIndex].localPath == localPath &&
-                        folders[currentIndex].fullRemotePath == remotePath &&
-                        folders[currentIndex].ignoredPatterns == ignoredPatterns &&
-                        folders[currentIndex].syncMode == syncMode
-
                     if syncMode == .bisync,
-                       configurationUnchanged,
                        let rcloneError = error as? RcloneError,
                        case .bisyncNeedsResync(_) = rcloneError {
-
                         folders[currentIndex].bisyncState = .needsResync
                     }
 
@@ -480,6 +539,8 @@ class SyncManager: ObservableObject {
         if !wasCancelled {
             await sendSyncNotification(folders)
         }
+        
+        processNextPendingSync()
     }
 
     /// Cancel the current sync operation
@@ -488,17 +549,20 @@ class SyncManager: ObservableObject {
         syncCancelled = true
         syncProgress = "Cancelling..."
         
-        // Terminate the rclone process immediately
         Task {
             await rclone.cancelCurrentOperation()
         }
     }
     
     func syncFolder(_ folder: SyncFolder) async {
+        guard isOnline else {
+            print("SyncManager: Network offline, skipping syncFolder.")
+            return
+        }
         guard !isSyncing else { return }
 
         let folderID = folder.id
-        guard let index = folders.firstIndex(where:{ $0.id == folderID }) else { return }
+        guard let index = folders.firstIndex(where: { $0.id == folderID }) else { return }
         
         syncCancelled = false
         isSyncing = true
@@ -510,8 +574,6 @@ class SyncManager: ObservableObject {
         let ignoredPatterns = folders[index].ignoredPatterns
         let syncMode = folders[index].syncMode
         let bisyncState = folders[index].bisyncState
-
-        // Resolve the actual local path (handling Volume-1 issues)
         let resolvedPath = resolveLocalPath(localPath)
         
         do {
@@ -525,11 +587,8 @@ class SyncManager: ObservableObject {
                     ignoredPatterns: ignoredPatterns
                 ) { [weak self] progress in
                     Task { @MainActor in
-                        self?.syncProgress =
-                            self?.simplifyProgress(progress) ?? progress
-
-                        self?.syncProgressPercent =
-                            self?.parseProgressPercent(from: progress)
+                        self?.syncProgress = self?.simplifyProgress(progress) ?? progress
+                        self?.syncProgressPercent = self?.parseProgressPercent(from: progress)
                     }
                 }
 
@@ -548,23 +607,14 @@ class SyncManager: ObservableObject {
                     mode: mode
                 ) { [weak self] progress in
                     Task { @MainActor in
-                        self?.syncProgress =
-                            self?.simplifyProgress(progress) ?? progress
-
-                        self?.syncProgressPercent =
-                            self?.parseProgressPercent(from: progress)
+                        self?.syncProgress = self?.simplifyProgress(progress) ?? progress
+                        self?.syncProgressPercent = self?.parseProgressPercent(from: progress)
                     }
                 }
             }
             
-            if let currentIndex = folders.firstIndex(where: {$0.id == folderID}) {
-                let configurationUnchanged =
-                    folders[currentIndex].localPath == localPath &&
-                    folders[currentIndex].fullRemotePath == remotePath &&
-                    folders[currentIndex].ignoredPatterns == ignoredPatterns &&
-                    folders[currentIndex].syncMode == syncMode
-
-                if result.success && syncMode == .bisync && configurationUnchanged {
+            if let currentIndex = folders.firstIndex(where: { $0.id == folderID }) {
+                if result.success && syncMode == .bisync {
                     folders[currentIndex].bisyncState = .ready
                 }
 
@@ -574,22 +624,14 @@ class SyncManager: ObservableObject {
             }
             
         } catch {
-            if let currentIndex = folders.firstIndex(where: {$0.id == folderID}) {
+            if let currentIndex = folders.firstIndex(where: { $0.id == folderID }) {
                 if syncCancelled {
                     folders[currentIndex].lastSyncStatus = .idle
                     folders[currentIndex].lastError = nil
                 } else {
-                    let configurationUnchanged =
-                        folders[currentIndex].localPath == localPath &&
-                        folders[currentIndex].fullRemotePath == remotePath &&
-                        folders[currentIndex].ignoredPatterns == ignoredPatterns &&
-                        folders[currentIndex].syncMode == syncMode
-
                     if syncMode == .bisync,
-                       configurationUnchanged,
                        let rcloneError = error as? RcloneError,
                        case .bisyncNeedsResync(_) = rcloneError {
-
                         folders[currentIndex].bisyncState = .needsResync
                     }
 
@@ -613,34 +655,26 @@ class SyncManager: ObservableObject {
         saveFolders()
     }
     
-    /// Resolve correct path for Volumes that might have a suffix (e.g. /Volumes/Name-1)
     private func resolveLocalPath(_ path: String) -> String {
-        // If path exists as is, use it
         if FileManager.default.fileExists(atPath: path) {
             return path
         }
         
-        // Only try to be smart about /Volumes paths
         guard path.hasPrefix("/Volumes/") else { return path }
         
-        // Example: /Volumes/Media/Backup -> components: ["", "Volumes", "Media", "Backup"]
         let components = path.components(separatedBy: "/")
         guard components.count >= 3 else { return path }
         
-        let volumeName = components[2] // "Media"
-        let relativePath = components.dropFirst(3).joined(separator: "/") // "Backup"
+        let volumeName = components[2]
+        let relativePath = components.dropFirst(3).joined(separator: "/")
         
-        // Remove trailing number if present from original volume name (e.g., "Media-1" -> "Media")
         var baseVolumeName = volumeName
         if let range = baseVolumeName.range(of: "-[0-9]+$", options: .regularExpression) {
             baseVolumeName.removeSubrange(range)
         }
         
-        // Check /Volumes for variants
         do {
             let volumes = try FileManager.default.contentsOfDirectory(atPath: "/Volumes")
-            
-            // Look for volume sharing the same base name
             for candidate in volumes {
                 var candidateBaseName = candidate
                 if let range = candidateBaseName.range(of: "-[0-9]+$", options: .regularExpression) {
@@ -650,25 +684,17 @@ class SyncManager: ObservableObject {
                 if candidateBaseName == baseVolumeName {
                     let newVolumePath = "/Volumes/\(candidate)"
                     let fullNewPath = relativePath.isEmpty ? newVolumePath : "\(newVolumePath)/\(relativePath)"
-                    
                     if FileManager.default.fileExists(atPath: fullNewPath) {
-                        if path != fullNewPath {
-                            print("Smart Resolve: Remapped \(path) -> \(fullNewPath)")
-                        }
                         return fullNewPath
                     }
                 }
             }
-        } catch {
-            print("Error listing /Volumes: \(error)")
-        }
+        } catch {}
         
         return path
     }
     
-    /// Parse percentage from rclone progress output
     private func parseProgressPercent(from output: String) -> Double? {
-        // rclone outputs progress like: "Transferred: 5 / 10, 50%" or just "50%"
         let pattern = #"(\d+)%"#
         if let regex = try? NSRegularExpression(pattern: pattern),
            let match = regex.firstMatch(in: output, range: NSRange(output.startIndex..., in: output)),
@@ -679,16 +705,7 @@ class SyncManager: ObservableObject {
         return nil
     }
     
-    /// Simplify rclone progress output to just show transferred/total and ETA
-    /// Input: "5.459 MiB / 6.622 MiB, 82%, ... 63 KiB/s, ETA 2s (xfr#20/29)"
-    /// Output: "5.5 / 6.6 MiB • ETA 2s"
     private func simplifyProgress(_ progress: String) -> String {
-        var transferred = ""
-        var total = ""
-        var unit = ""
-        var eta = ""
-        
-        // Extract transferred/total bytes (e.g., "5.459 MiB / 6.622 MiB")
         let bytesPattern = #"([\d.]+)\s*([\w]+)\s*/\s*([\d.]+)\s*([\w]+)"#
         if let regex = try? NSRegularExpression(pattern: bytesPattern),
            let match = regex.firstMatch(in: progress, range: NSRange(progress.startIndex..., in: progress)) {
@@ -697,44 +714,37 @@ class SyncManager: ObservableObject {
                let range4 = Range(match.range(at: 4), in: progress) {
                 let t = Double(progress[range1]) ?? 0
                 let tot = Double(progress[range3]) ?? 0
-                transferred = String(format: "%.1f", t)
-                total = String(format: "%.1f", tot)
-                unit = String(progress[range4])
+                let unit = String(progress[range4])
+                
+                var eta = ""
+                let etaPattern = #"ETA\s+([\w\d]+)"#
+                if let etaRegex = try? NSRegularExpression(pattern: etaPattern),
+                   let etaMatch = etaRegex.firstMatch(in: progress, range: NSRange(progress.startIndex..., in: progress)),
+                   let etaRange = Range(etaMatch.range(at: 1), in: progress) {
+                    eta = String(progress[etaRange])
+                }
+                
+                var result = String(format: "%.1f / %.1f %@", t, tot, unit)
+                if !eta.isEmpty && eta != "-" {
+                    result += " • ETA \(eta)"
+                }
+                return result
             }
         }
-        
-        // Extract ETA (e.g., "ETA 2s" or "ETA 1m30s")
-        let etaPattern = #"ETA\s+([\w\d]+)"#
-        if let regex = try? NSRegularExpression(pattern: etaPattern),
-           let match = regex.firstMatch(in: progress, range: NSRange(progress.startIndex..., in: progress)),
-           let range = Range(match.range(at: 1), in: progress) {
-            eta = String(progress[range])
-        }
-        
-        // Build simplified string
-        if !transferred.isEmpty && !total.isEmpty {
-            var result = "\(transferred) / \(total) \(unit)"
-            if !eta.isEmpty && eta != "-" {
-                result += " • ETA \(eta)"
-            }
-            return result
-        }
-        
         return progress
     }
     
-    // MARK: - Timer
+    // MARK: - Optional Scheduled Timer
     
     private func scheduleSync() {
         syncTimer?.invalidate()
+        syncTimer = nil
         
-        // For daily sync, schedule at specific time
         if case .daily = settings.syncInterval {
             scheduleDailySync()
             return
         }
         
-        // For other intervals, use fixed interval timer
         guard let interval = settings.syncInterval.intervalSeconds else { return }
         
         syncTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
@@ -744,40 +754,31 @@ class SyncManager: ObservableObject {
         }
     }
     
-    /// Schedule a sync at the user's preferred daily sync time
     private func scheduleDailySync() {
         let calendar = Calendar.current
         let syncTimeComponents = calendar.dateComponents([.hour, .minute], from: settings.dailySyncTime)
         
-        // Calculate next occurrence of this time
-        var nextSyncDate: Date
-        
-        // Get today at the sync time
         var todayComponents = calendar.dateComponents([.year, .month, .day], from: Date())
         todayComponents.hour = syncTimeComponents.hour
         todayComponents.minute = syncTimeComponents.minute
         todayComponents.second = 0
         
+        let nextSyncDate: Date
         if let todayAtSyncTime = calendar.date(from: todayComponents) {
             if todayAtSyncTime > Date() {
-                // Sync time is still coming today
                 nextSyncDate = todayAtSyncTime
             } else {
-                // Sync time already passed, schedule for tomorrow
                 nextSyncDate = calendar.date(byAdding: .day, value: 1, to: todayAtSyncTime) ?? todayAtSyncTime
             }
         } else {
-            // Fallback: schedule for 24 hours from now
             nextSyncDate = Date().addingTimeInterval(24 * 60 * 60)
         }
         
         let timeUntilSync = nextSyncDate.timeIntervalSince(Date())
         
-        // Schedule one-shot timer, then reschedule after sync
         syncTimer = Timer.scheduledTimer(withTimeInterval: timeUntilSync, repeats: false) { [weak self] _ in
             Task { @MainActor in
                 await self?.syncAll()
-                // Reschedule for the next day
                 self?.scheduleDailySync()
             }
         }
@@ -786,10 +787,10 @@ class SyncManager: ObservableObject {
     // MARK: - Notifications
     
     private func sendSyncNotification(_ folders: [SyncFolder]) async {
+        guard Bundle.main.bundleIdentifier != nil else { return }
         let errorCount = folders.filter { $0.lastSyncStatus == .error }.count
         let hasErrors = errorCount > 0
         
-        // Check settings - if neither is enabled, return early
         if !settings.showNotifications && !(hasErrors && settings.notifyOnError) {
             return
         }
@@ -801,15 +802,8 @@ class SyncManager: ObservableObject {
             content.title = "Sync Failed"
             content.body = "\(errorCount) folder(s) encountered errors"
             content.categoryIdentifier = "SYNC_ERROR"
-            
-            // Mark as time sensitive for errors
-            if #available(macOS 12.0, *) {
-                content.interruptionLevel = .timeSensitive
-            }
         } else {
-            // Success case - only proceed if showNotifications is true
             guard settings.showNotifications else { return }
-            
             content.title = "Sync Complete"
             content.body = "\(folders.count) folder(s) synced successfully"
         }
@@ -821,12 +815,6 @@ class SyncManager: ObservableObject {
         )
         
         try? await UNUserNotificationCenter.current().add(request)
-    }
-    
-    func requestNotificationPermission() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
-            print("Notification permission: \(granted)")
-        }
     }
     
     // MARK: - Launch at Login
@@ -841,82 +829,5 @@ class SyncManager: ObservableObject {
         } catch {
             print("Failed to update launch at login: \(error)")
         }
-    }
-    // MARK: - Updates
-    
-    private func performAutomaticUpdateCheck() {
-        Task {
-            do {
-                let (isAvailable, latestVersion, _) = try await checkForUpdates()
-                if isAvailable {
-                    await sendUpdateNotification(version: latestVersion)
-                }
-            } catch {
-                print("Failed to check for updates: \(error)")
-            }
-        }
-    }
-    
-    private func sendUpdateNotification(version: String) async {
-        let content = UNMutableNotificationContent()
-        content.title = "Update Available"
-        content.body = "Version \(version) is available on GitHub."
-        content.sound = .default
-        
-        // Use a fixed identifier to avoid spamming the user if they don't update
-        let request = UNNotificationRequest(
-            identifier: "UPDATE_AVAILABLE",
-            content: content,
-            trigger: nil
-        )
-        
-        try? await UNUserNotificationCenter.current().add(request)
-    }
-    
-    /// Check for updates via GitHub API
-    /// Returns: (isUpdateAvailable, latestVersion, releaseURL)
-    func checkForUpdates() async throws -> (Bool, String, URL?) {
-        let repoName = "GoogleDriveSync"
-        let url = URL(string: "https://api.github.com/repos/saihgupr/\(repoName)/releases/latest")!
-        var request = URLRequest(url: url)
-        request.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
-        
-        let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
-        request.setValue("\(repoName)/\(currentVersion)", forHTTPHeaderField: "User-Agent")
-        
-        let (data, response) = try await URLSession.shared.data(for: request)
-        
-        if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
-            print("Update check failed with status code: \(httpResponse.statusCode)")
-            if httpResponse.statusCode == 404 {
-                print("No 'Latest' release found on GitHub. Make sure your release is not marked as a draft or pre-release.")
-            }
-            throw URLError(.badServerResponse)
-        }
-        
-        let release = try JSONDecoder().decode(GitHubRelease.self, from: data)
-        
-        let latestVersion = release.tagName.replacingOccurrences(of: "v", with: "")
-        
-        let isUpdateAvailable = compareVersions(latest: latestVersion, current: currentVersion)
-        
-        return (isUpdateAvailable, release.tagName, URL(string: release.htmlUrl))
-    }
-    
-    private func compareVersions(latest: String, current: String) -> Bool {
-        let latestComponents = latest.split(separator: ".").compactMap { Int($0) }
-        let currentComponents = current.split(separator: ".").compactMap { Int($0) }
-        
-        let maxCount = max(latestComponents.count, currentComponents.count)
-        
-        for i in 0..<maxCount {
-            let v1 = i < latestComponents.count ? latestComponents[i] : 0
-            let v2 = i < currentComponents.count ? currentComponents[i] : 0
-            
-            if v1 > v2 { return true }
-            if v1 < v2 { return false }
-        }
-        
-        return false
     }
 }

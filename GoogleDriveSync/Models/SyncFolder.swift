@@ -1,9 +1,9 @@
 //
 //  SyncFolder.swift
-//  DriveSync
+//  rsync
 //
 //  Created by saihgupr on 2024-12-11.
-//  Edited by MichasCoup on 2026-07-26.
+//  Updated on 2026-09-25.
 //
 
 import Foundation
@@ -47,6 +47,7 @@ struct SyncFolder: Identifiable, Codable, Equatable {
     var ignoredPatterns: [String]
     var syncMode: SyncMode
     var bisyncState: BisyncState
+    var syncOnFirstConnection: Bool
     
     init(
         id: UUID = UUID(),
@@ -59,7 +60,8 @@ struct SyncFolder: Identifiable, Codable, Equatable {
         lastError: String? = nil,
         ignoredPatterns: [String] = [],
         syncMode: SyncMode = .sync,
-        bisyncState: BisyncState = .uninitialized
+        bisyncState: BisyncState = .uninitialized,
+        syncOnFirstConnection: Bool = true
     ) {
         self.id = id
         self.localPath = localPath
@@ -72,6 +74,7 @@ struct SyncFolder: Identifiable, Codable, Equatable {
         self.ignoredPatterns = ignoredPatterns
         self.syncMode = syncMode
         self.bisyncState = bisyncState
+        self.syncOnFirstConnection = syncOnFirstConnection
     }
     
     enum CodingKeys: String, CodingKey {
@@ -86,6 +89,7 @@ struct SyncFolder: Identifiable, Codable, Equatable {
         case ignoredPatterns
         case syncMode
         case bisyncState
+        case syncOnFirstConnection
     }
     
     init(from decoder: Decoder) throws {
@@ -99,9 +103,9 @@ struct SyncFolder: Identifiable, Codable, Equatable {
         self.isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
         self.lastError = try container.decodeIfPresent(String.self, forKey: .lastError)
         self.ignoredPatterns = try container.decodeIfPresent([String].self, forKey: .ignoredPatterns) ?? []
-        // Take care of UserDefaults
         self.syncMode = try container.decodeIfPresent(SyncMode.self, forKey: .syncMode) ?? .sync
-        self.bisyncState = try container.decodeIfPresent(BisyncState.self,forKey: .bisyncState) ?? .uninitialized
+        self.bisyncState = try container.decodeIfPresent(BisyncState.self, forKey: .bisyncState) ?? .uninitialized
+        self.syncOnFirstConnection = try container.decodeIfPresent(Bool.self, forKey: .syncOnFirstConnection) ?? true
     }
     
     var displayName: String {

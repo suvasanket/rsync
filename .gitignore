@@ -42,3 +42,4 @@ rclone-amd64-bin
 # Scripts
 deploy.sh
 release.sh
+.build/

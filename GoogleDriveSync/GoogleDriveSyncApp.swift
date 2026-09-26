@@ -10,7 +10,7 @@ import ServiceManagement
 import UserNotifications
 
 @main
-struct GoogleDriveSyncApp: App {
+struct RsyncApp: App {
     @StateObject private var syncManager = SyncManager()
     @Environment(\.openSettings) private var openSettings
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
@@ -33,6 +33,13 @@ struct GoogleDriveSyncApp: App {
 
 class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
+        
+        guard Bundle.main.bundleIdentifier != nil else {
+            print("Notice: Running outside app bundle; skipping notifications.")
+            return
+        }
+        
         UNUserNotificationCenter.current().delegate = self
         
         // Register notification categories

@@ -9,7 +9,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject var syncManager: SyncManager
-    @State private var selectedTab = 0
+    @LocalState private var selectedTab = 0
     
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -40,9 +40,9 @@ struct SettingsView: View {
 
 struct SyncSettingsView: View {
     @EnvironmentObject var syncManager: SyncManager
-    @State private var showingAddSheet = false
-    @State private var showingAddAccountSheet = false
-    @State private var selectedFolder: SyncFolder?
+    @LocalState private var showingAddSheet = false
+    @LocalState private var showingAddAccountSheet = false
+    @LocalState private var selectedFolder: SyncFolder?
     
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -71,7 +71,7 @@ struct SyncSettingsView: View {
                             .font(.system(size: 60))
                             .foregroundStyle(.blue.gradient)
                         
-                        Text("Welcome to GoogleDriveSync")
+                        Text("Welcome to rsync")
                             .font(.title2.bold())
                         
                         Text("Configure a cloud storage provider to start syncing folders.")
@@ -142,7 +142,7 @@ struct FolderSettingsRow: View {
     let onEdit: () -> Void
     @EnvironmentObject var syncManager: SyncManager
     
-    @State private var showingErrorPopover = false
+    @LocalState private var showingErrorPopover = false
     
     var body: some View {
         HStack(alignment: .center, spacing: 16) {
@@ -272,11 +272,12 @@ struct AddFolderSheet: View {
     @EnvironmentObject var syncManager: SyncManager
     @Environment(\.dismiss) private var dismiss
     
-    @State private var localPath: String = ""
-    @State private var selectedRemote: RcloneRemote?
-    @State private var remotePath: String = ""
-    @State private var ignoredPatternsText: String = ""
-    @State private var syncMode: SyncMode = .sync
+    @LocalState private var localPath: String = ""
+    @LocalState private var selectedRemote: RcloneRemote?
+    @LocalState private var remotePath: String = ""
+    @LocalState private var ignoredPatternsText: String = ""
+    @LocalState private var syncMode: SyncMode = .sync
+    @LocalState private var syncOnFirstConnection: Bool = true
     
     var body: some View {
         VStack(spacing: 20) {
@@ -332,6 +333,13 @@ struct AddFolderSheet: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
+                    if syncMode == .bisync {
+                        Toggle("Sync on first connection", isOn: $syncOnFirstConnection)
+                        Text("Automatically trigger initial sync once online connectivity is established.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
                 } header: {
                     Text("Sync Mode")
                 }
@@ -373,7 +381,8 @@ struct AddFolderSheet: View {
                             remoteName: remote.name,
                             remotePath: remotePath,
                             ignoredPatterns: parsedPatterns,
-                            syncMode: syncMode
+                            syncMode: syncMode,
+                            syncOnFirstConnection: syncOnFirstConnection
                         )
                         syncManager.folders.append(folder)
                         syncManager.saveFolders()
@@ -386,16 +395,30 @@ struct AddFolderSheet: View {
         }
         .padding()
         .frame(width: 450, height: 450)
+        .onAppear {
+            if localPath.isEmpty {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    selectFolder()
+                }
+            }
+        }
     }
     
     private func selectFolder() {
+        NSApp.activate(ignoringOtherApps: true)
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Choose Folder"
+        panel.message = "Select a local folder to sync with Google Drive"
+        panel.level = .floating
         
-        if panel.runModal() == .OK, let url = panel.url {
-            localPath = url.path
+        panel.begin { response in
+            if response == .OK, let url = panel.url {
+                localPath = url.path
+            }
         }
     }
 }
@@ -407,11 +430,12 @@ struct EditFolderSheet: View {
     @EnvironmentObject var syncManager: SyncManager
     @Environment(\.dismiss) private var dismiss
     
-    @State private var localPath: String = ""
-    @State private var selectedRemote: RcloneRemote?
-    @State private var remotePath: String = ""
-    @State private var ignoredPatternsText: String = ""
-    @State private var syncMode: SyncMode = .sync
+    @LocalState private var localPath: String = ""
+    @LocalState private var selectedRemote: RcloneRemote?
+    @LocalState private var remotePath: String = ""
+    @LocalState private var ignoredPatternsText: String = ""
+    @LocalState private var syncMode: SyncMode = .sync
+    @LocalState private var syncOnFirstConnection: Bool = true
     
     var body: some View {
         VStack(spacing: 20) {
@@ -463,6 +487,13 @@ struct EditFolderSheet: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
+                    if syncMode == .bisync {
+                        Toggle("Sync on first connection", isOn: $syncOnFirstConnection)
+                        Text("Automatically trigger initial sync once online connectivity is established.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
                 } header: {
                     Text("Sync Mode")
                 }
@@ -499,6 +530,7 @@ struct EditFolderSheet: View {
                         updated.remoteName = remote.name
                         updated.remotePath = remotePath
                         updated.syncMode = syncMode
+                        updated.syncOnFirstConnection = syncOnFirstConnection
                         
                         updated.ignoredPatterns = ignoredPatternsText
                             .components(separatedBy: .newlines)
@@ -521,17 +553,25 @@ struct EditFolderSheet: View {
             selectedRemote = syncManager.availableRemotes.first { $0.name == folder.remoteName }
             ignoredPatternsText = folder.ignoredPatterns.joined(separator: "\n")
             syncMode = folder.syncMode
+            syncOnFirstConnection = folder.syncOnFirstConnection
         }
     }
     
     private func selectFolder() {
+        NSApp.activate(ignoringOtherApps: true)
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Choose Folder"
+        panel.message = "Select a local folder to sync with Google Drive"
+        panel.level = .floating
         
-        if panel.runModal() == .OK, let url = panel.url {
-            localPath = url.path
+        panel.begin { response in
+            if response == .OK, let url = panel.url {
+                localPath = url.path
+            }
         }
     }
 }
@@ -542,9 +582,9 @@ struct AddAccountSheet: View {
     @EnvironmentObject var syncManager: SyncManager
     @Environment(\.dismiss) private var dismiss
     
-    @State private var accountName: String = ""
-    @State private var isAuthenticating: Bool = false
-    @State private var authError: String? = nil
+    @LocalState private var accountName: String = ""
+    @LocalState private var isAuthenticating: Bool = false
+    @LocalState private var authError: String? = nil
     
     var body: some View {
         VStack(spacing: 25) {
@@ -640,9 +680,9 @@ struct AddAccountSheet: View {
 
 struct AccountsSettingsView: View {
     @EnvironmentObject var syncManager: SyncManager
-    @State private var showingAddAccountSheet = false
-    @State private var showingRenameSheet = false
-    @State private var accountToRename: RcloneRemote?
+    @LocalState private var showingAddAccountSheet = false
+    @LocalState private var showingRenameSheet = false
+    @LocalState private var accountToRename: RcloneRemote?
     
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -757,9 +797,9 @@ struct RenameAccountSheet: View {
     @Environment(\.dismiss) private var dismiss
     
     let currentName: String
-    @State private var newName: String = ""
-    @State private var isProcessing = false
-    @State private var errorMessage: String?
+    @LocalState private var newName: String = ""
+    @LocalState private var isProcessing = false
+    @LocalState private var errorMessage: String?
     
     var body: some View {
         VStack(spacing: 20) {
@@ -839,18 +879,29 @@ struct RenameAccountSheet: View {
 
 struct GeneralSettingsView: View {
     @EnvironmentObject var syncManager: SyncManager
-    
-    @State private var isCheckingForUpdates = false
-    @State private var showingUpdateAlert = false
-    @State private var updateAlertTitle = ""
-    @State private var updateAlertMessage = ""
-    @State private var updateURL: URL?
-    
-    // Advanced / Reset state
-    @State private var showingResetConfirmation = false
+    @LocalState private var showingResetConfirmation = false
     
     var body: some View {
         Form {
+            Section {
+                Toggle("Watch for changes (Real-Time Sync)", isOn: $syncManager.settings.watchForChanges)
+                
+                if syncManager.settings.watchForChanges {
+                    HStack {
+                        Text("Quiet Period (Debounce)")
+                        Spacer()
+                        Text("\(String(format: "%.1f", syncManager.settings.debounceDelaySeconds))s")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } header: {
+                Text("File System Watching")
+            } footer: {
+                Text("Automatically detects created, modified, or deleted files and triggers a sync.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            
             Section {
                 Picker("Sync Interval", selection: $syncManager.settings.syncInterval) {
                     ForEach(SyncInterval.allCases, id: \.self) { interval in
@@ -858,7 +909,6 @@ struct GeneralSettingsView: View {
                     }
                 }
                 
-                // Show time picker only when "Once a Day" is selected
                 if case .daily = syncManager.settings.syncInterval {
                     DatePicker(
                         "Sync Time",
@@ -868,75 +918,61 @@ struct GeneralSettingsView: View {
                 }
                 
                 Toggle("Sync when app launches", isOn: $syncManager.settings.syncOnLaunch)
+                Toggle("Sync on first connection (Bi-Sync)", isOn: $syncManager.settings.syncOnFirstConnection)
             } header: {
-                Text("Sync Schedule")
+                Text("Optional Sync Schedule & Connectivity")
+            } footer: {
+                Text("When 'Sync on first connection' is enabled, bi-sync folders automatically perform an initial sync when internet connectivity is detected.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            
+            Section {
+                VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(ConfigStore.shared.configDirectoryURL.path)
+                            .font(.system(.subheadline, design: .monospaced))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text("Stores config.json (folders & preferences) and rclone.conf (accounts & credentials).")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    
+                    HStack(spacing: 8) {
+                        Button("Change Config Folder...") {
+                            promptChangeConfigDirectory()
+                        }
+                        
+                        Button("Reveal in Finder") {
+                            NSWorkspace.shared.open(ConfigStore.shared.configDirectoryURL)
+                        }
+                        
+                        let defaultHomePath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".rsync").path
+                        if ConfigStore.shared.configDirectoryURL.path != defaultHomePath {
+                            Button("Reset to Default") {
+                                Task { @MainActor in
+                                    await syncManager.resetConfigDirectory()
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+            } header: {
+                Text("Configuration Storage (Hidden Folder)")
+            } footer: {
+                Text("All sync accounts, folder mappings, and preferences persist in this hidden directory across app runs. You can also override the path with the RSYNC_CONFIG_DIR environment variable.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             
             Section {
                 Toggle("Show notifications after sync", isOn: $syncManager.settings.showNotifications)
-                
                 Toggle("Notify on Error", isOn: $syncManager.settings.notifyOnError)
-                
                 Toggle("Launch at login", isOn: $syncManager.settings.launchAtLogin)
             } header: {
                 Text("App Behavior")
-            }
-            
-            Section {
-                Toggle("Automatically check for updates", isOn: $syncManager.settings.checkUpdatesAutomatically)
-                
-                Button {
-                    checkForUpdates()
-                } label: {
-                    if isCheckingForUpdates {
-                        HStack {
-                            Text("Checking...")
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-                    } else {
-                        Text("Check for Updates")
-                    }
-                }
-                .disabled(isCheckingForUpdates)
-                .alert(updateAlertTitle, isPresented: $showingUpdateAlert) {
-                    if let url = updateURL {
-                        Button("Get Update") {
-                            NSWorkspace.shared.open(url)
-                        }
-                    }
-                    Button("OK", role: .cancel) { }
-                } message: {
-                    Text(updateAlertMessage)
-                }
-                
-                HStack {
-                    Text("Version")
-                    Spacer()
-                    Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")")
-                        .foregroundStyle(.secondary)
-                }
-                
-            } header: {
-                Text("About")
-            }
-            
-            Section {
-                Button {
-                    if let url = URL(string: "https://ko-fi.com/saihgupr") {
-                        NSWorkspace.shared.open(url)
-                    }
-                } label: {
-                    HStack {
-                        Label("Buy me a coffee", systemImage: "cup.and.saucer.fill")
-                        Spacer()
-                        Image(systemName: "arrow.up.forward.app")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            } header: {
-                Text("Support")
             }
             
             Section {
@@ -962,26 +998,23 @@ struct GeneralSettingsView: View {
         }
     }
     
-    private func checkForUpdates() {
-        isCheckingForUpdates = true
-        Task {
-            do {
-                let (isAvailable, latestVersion, url) = try await syncManager.checkForUpdates()
-                if isAvailable {
-                    updateAlertTitle = "Update Available"
-                    updateAlertMessage = "A new version (\(latestVersion)) is available."
-                    updateURL = url
-                } else {
-                    updateAlertTitle = "Up to Date"
-                    updateAlertMessage = "You are running the latest version."
-                    updateURL = nil
+    private func promptChangeConfigDirectory() {
+        NSApp.activate(ignoringOtherApps: true)
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose Folder"
+        panel.message = "Select a folder to store rsync configurations"
+        panel.level = .floating
+        
+        panel.begin { response in
+            if response == .OK, let selectedURL = panel.url {
+                Task { @MainActor in
+                    await syncManager.changeConfigDirectory(to: selectedURL)
                 }
-            } catch {
-                updateAlertTitle = "Update Check Failed"
-                updateAlertMessage = error.localizedDescription
             }
-            isCheckingForUpdates = false
-            showingUpdateAlert = true
         }
     }
 }

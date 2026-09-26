@@ -1,12 +1,13 @@
 //
 //  RcloneWrapper.swift
-//  DriveSync
+//  GoogleDriveSync
 //
 //  Created by saihgupr on 2024-12-11.
-//  Edited by MichasCoup on 2026-07-26.
+//  Optimized on 2026-09-25.
 //
 
 import Foundation
+import AppKit
 
 enum BisyncMode {
     case normal
@@ -60,6 +61,10 @@ actor RcloneWrapper {
     private let rclonePath: String
     private let runner = ProcessRunner.shared
     
+    private var configArgs: [String] {
+        ["--config", ConfigStore.shared.rcloneConfigURL.path]
+    }
+    
     init(rclonePath: String = AppSettings.defaultRclonePath) {
         self.rclonePath = rclonePath
     }
@@ -85,14 +90,13 @@ actor RcloneWrapper {
         guard result.isSuccess else {
             throw RcloneError.notInstalled
         }
-        // Extract first line (e.g., "rclone v1.65.0")
         return result.stdout.components(separatedBy: "\n").first ?? result.stdout
     }
     
-    // MARK: - Remote Management
+    // MARK: - Remote Management (Google Drive)
     
     func listRemotes() async throws -> [RcloneRemote] {
-        let result = try await runner.run(rclonePath, arguments: ["listremotes", "--long"])
+        let result = try await runner.run(rclonePath, arguments: configArgs + ["listremotes", "--long"])
         guard result.isSuccess else {
             throw RcloneError.configurationFailed(result.stderr)
         }
@@ -101,7 +105,6 @@ actor RcloneWrapper {
         let lines = result.stdout.components(separatedBy: "\n")
         
         for line in lines where !line.isEmpty {
-            // Format: "remotename: type"
             let parts = line.components(separatedBy: ":")
             if parts.count >= 2 {
                 let name = parts[0].trimmingCharacters(in: .whitespaces)
@@ -115,30 +118,84 @@ actor RcloneWrapper {
     
     /// Creates a new Google Drive remote using in-app browser OAuth flow
     func createDriveAccount(name: String) async throws {
-        let args = [
+        final class AuthState: @unchecked Sendable {
+            private let lock = NSLock()
+            private var _output = ""
+            private var _opened = false
+            
+            func append(_ str: String) {
+                lock.lock()
+                defer { lock.unlock() }
+                _output += str
+            }
+            
+            func shouldOpenBrowser() -> Bool {
+                lock.lock()
+                defer { lock.unlock() }
+                if !_opened {
+                    _opened = true
+                    return true
+                }
+                return false
+            }
+            
+            var output: String {
+                lock.lock()
+                defer { lock.unlock() }
+                return _output
+            }
+        }
+        
+        let state = AuthState()
+        
+        let result = try await runner.runWithProgress(rclonePath, arguments: ["authorize", "drive"]) { output in
+            state.append(output)
+            
+            let pattern = #"http://127\.0\.0\.1:\d+/auth\S*"#
+            if let regex = try? NSRegularExpression(pattern: pattern),
+               let match = regex.firstMatch(in: output, range: NSRange(output.startIndex..., in: output)),
+               let range = Range(match.range(at: 0), in: output),
+               let url = URL(string: String(output[range])) {
+                if state.shouldOpenBrowser() {
+                    Task { @MainActor in
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            }
+        }
+        
+        guard result.isSuccess else {
+            throw RcloneError.configurationFailed("Google Drive authentication was cancelled or failed.")
+        }
+        
+        let combined = result.stdout.isEmpty ? state.output : result.stdout
+        
+        // Parse token JSON
+        guard let tokenRange = combined.range(of: #"\{[\s\S]*"access_token"[\s\S]*\}"#, options: .regularExpression) else {
+            throw RcloneError.configurationFailed("Did not receive valid Google Drive token. Please try again.")
+        }
+        
+        let tokenJson = String(combined[tokenRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        // Create remote in rclone config with the OAuth token
+        let createResult = try await runner.run(rclonePath, arguments: configArgs + [
             "config", "create", name, "drive",
             "scope", "drive",
-            "config_is_local", "true",
-            "--non-interactive"
-        ]
+            "token", tokenJson
+        ])
         
-        // This will block and wait for the user to complete OAuth in their browser
-        let result = try await runner.run(rclonePath, arguments: args)
-        guard result.isSuccess else {
-            throw RcloneError.configurationFailed("Failed to authenticate: \(result.stderr)")
+        guard createResult.isSuccess else {
+            throw RcloneError.configurationFailed("Failed to save remote config: \(createResult.stderr)")
         }
     }
     
     /// Rename an existing remote
     func renameRemote(from oldName: String, to newName: String) async throws {
-        // Use rclone config update to effectively rename by creating new and deleting old
-        // First, get the config for the old remote
-        let showResult = try await runner.run(rclonePath, arguments: ["config", "show", oldName])
+        let showResult = try await runner.run(rclonePath, arguments: configArgs + ["config", "show", oldName])
         guard showResult.isSuccess else {
             throw RcloneError.invalidRemote(oldName)
         }
         
-        // Parse the config to get the token
         let configLines = showResult.stdout.components(separatedBy: "\n")
         var token = ""
         for line in configLines {
@@ -147,67 +204,25 @@ actor RcloneWrapper {
             }
         }
         
-        // Create new remote with the new name using the same token
         let createArgs = ["config", "create", newName, "drive", "token", token]
-        let createResult = try await runner.run(rclonePath, arguments: createArgs)
+        let createResult = try await runner.run(rclonePath, arguments: configArgs + createArgs)
         guard createResult.isSuccess else {
             throw RcloneError.configurationFailed("Failed to create new remote: \(createResult.stderr)")
         }
         
-        // Delete the old remote
-        let deleteResult = try await runner.run(rclonePath, arguments: ["config", "delete", oldName])
+        let deleteResult = try await runner.run(rclonePath, arguments: configArgs + ["config", "delete", oldName])
         guard deleteResult.isSuccess else {
-            // Try to clean up the new one if delete fails
-            _ = try? await runner.run(rclonePath, arguments: ["config", "delete", newName])
+            _ = try? await runner.run(rclonePath, arguments: configArgs + ["config", "delete", newName])
             throw RcloneError.configurationFailed("Failed to delete old remote: \(deleteResult.stderr)")
         }
     }
     
     /// Delete a remote
     func deleteRemote(name: String) async throws {
-        let result = try await runner.run(rclonePath, arguments: ["config", "delete", name])
+        let result = try await runner.run(rclonePath, arguments: configArgs + ["config", "delete", name])
         guard result.isSuccess else {
             throw RcloneError.configurationFailed("Failed to delete remote: \(result.stderr)")
         }
-    }
-    
-    /// Get the Google Drive folder ID for a remote path
-    /// Returns "root" for empty paths (My Drive root), or the actual folder ID
-    func getFolderID(remote: String, path: String) async -> String? {
-        do {
-            // If path is empty, we're looking at the root (My Drive)
-            if path.isEmpty {
-                // Return special marker for root
-                return "root"
-            }
-            
-            // To get the folder ID, we need to list the parent directory and find our folder by name
-            // Split path to get parent and folder name
-            let pathComponents = path.components(separatedBy: "/")
-            let folderName = pathComponents.last ?? path
-            let parentPath = pathComponents.dropLast().joined(separator: "/")
-            
-            // List the parent directory (or root if no parent)
-            let listPath = parentPath.isEmpty ? "\(remote):" : "\(remote):\(parentPath)"
-            let result = try await runner.run(rclonePath, arguments: ["lsjson", listPath, "--dirs-only"])
-            
-            if result.isSuccess, let data = result.stdout.data(using: .utf8) {
-                // Parse JSON array
-                if let items = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
-                    // Find our folder by name
-                    for item in items {
-                        if let name = item["Name"] as? String, name == folderName,
-                           let id = item["ID"] as? String {
-                            return id
-                        }
-                    }
-                }
-            }
-        } catch {
-            print("Failed to get folder ID: \(error)")
-        }
-        
-        return nil
     }
     
     // MARK: - Sync Operations
@@ -219,7 +234,13 @@ actor RcloneWrapper {
         dryRun: Bool = false,
         onProgress: (@Sendable (String) -> Void)? = nil
     ) async throws -> SyncResult {
-        var args = ["sync", source, destination, "--progress", "--stats-one-line"]
+        var args = configArgs + [
+            "sync", source, destination,
+            "--progress",
+            "--stats-one-line",
+            "--buffer-size", "4M",
+            "--use-mmap"
+        ]
         
         for pattern in ignoredPatterns {
             let trimmed = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -254,48 +275,7 @@ actor RcloneWrapper {
                 error: nil
             )
         } else {
-            throw RcloneError.syncFailed(result.stderr)
-        }
-    }
-    
-    func copy(
-        source: String,
-        destination: String,
-        ignoredPatterns: [String] = [],
-        onProgress: (@Sendable (String) -> Void)? = nil
-    ) async throws -> SyncResult {
-        var args = ["copy", source, destination, "--progress", "--stats-one-line"]
-        
-        for pattern in ignoredPatterns {
-            let trimmed = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty && !trimmed.hasPrefix("#") {
-                args.append(contentsOf: ["--exclude", trimmed])
-            }
-        }
-        
-        let startTime = Date()
-        
-        let result: ProcessResult
-        if let progressHandler = onProgress {
-            result = try await runner.runWithProgress(rclonePath, arguments: args) { output in
-                progressHandler(output)
-            }
-        } else {
-            result = try await runner.run(rclonePath, arguments: args)
-        }
-        
-        let duration = Date().timeIntervalSince(startTime)
-        
-        if result.isSuccess {
-            return SyncResult(
-                success: true,
-                filesTransferred: parseFileCount(from: result.stdout),
-                bytesTransferred: parseByteCount(from: result.stdout),
-                duration: duration,
-                error: nil
-            )
-        } else {
-            throw RcloneError.syncFailed(result.stderr)
+            throw RcloneError.syncFailed(result.stderr.isEmpty ? result.stdout : result.stderr)
         }
     }
     
@@ -307,13 +287,14 @@ actor RcloneWrapper {
         dryRun: Bool = false,
         onProgress: (@Sendable (String) -> Void)? = nil
     ) async throws -> SyncResult {
-        
-        var args = [
+        var args = configArgs + [
             "bisync",
             local,
             remote,
             "--progress",
             "--stats-one-line",
+            "--buffer-size", "4M",
+            "--use-mmap",
             "--resilient",
             "--recover",
             "--max-lock", "2m",
@@ -321,21 +302,13 @@ actor RcloneWrapper {
         ]
 
         if mode == .initial {
-            args.append(contentsOf: [
-                "--resync-mode", "newer"
-            ])
+            args.append(contentsOf: ["--resync-mode", "newer"])
         }
 
         for pattern in ignoredPatterns {
-            let trimmed = pattern.trimmingCharacters(
-                in: .whitespacesAndNewlines
-            )
-            
+            let trimmed = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty && !trimmed.hasPrefix("#") {
-                args.append(contentsOf: [
-                    "--exclude",
-                    trimmed
-                ])
+                args.append(contentsOf: ["--exclude", trimmed])
             }
         }
 
@@ -347,30 +320,20 @@ actor RcloneWrapper {
         let result: ProcessResult
 
         if let progressHandler = onProgress {
-            result = try await runner.runWithProgress(
-                rclonePath,
-                arguments: args
-            ) { output in
+            result = try await runner.runWithProgress(rclonePath, arguments: args) { output in
                 progressHandler(output)
             }
         } else {
-            result = try await runner.run(
-                rclonePath,
-                arguments: args
-            )
+            result = try await runner.run(rclonePath, arguments: args)
         }
 
         let duration = Date().timeIntervalSince(startTime)
 
         guard result.isSuccess else {
-            let errorMessage = result.stderr.isEmpty
-                ? result.stdout
-                : result.stderr
-
+            let errorMessage = result.stderr.isEmpty ? result.stdout : result.stderr
             if result.exitCode == 7 {
                 throw RcloneError.bisyncNeedsResync(errorMessage)
             }
-
             throw RcloneError.syncFailed(errorMessage)
         }
 
@@ -388,7 +351,6 @@ actor RcloneWrapper {
     // MARK: - Helpers
     
     private func parseFileCount(from output: String) -> Int {
-        // Parse "Transferred: X / Y, 100%" pattern
         let pattern = #"Transferred:\s+(\d+)"#
         if let regex = try? NSRegularExpression(pattern: pattern),
            let match = regex.firstMatch(in: output, range: NSRange(output.startIndex..., in: output)),
@@ -399,8 +361,6 @@ actor RcloneWrapper {
     }
     
     private func parseByteCount(from output: String) -> Int64 {
-        // rclone stats one-line outputs like: "Transferred: 5.459 MiB / 6.622 MiB, 82%, 0 B/s, ETA -"
-        // We look for the part before the first "/"
         let pattern = #"Transferred:\s+([\d.]+)\s*(\w+)"#
         if let regex = try? NSRegularExpression(pattern: pattern),
            let match = regex.firstMatch(in: output, range: NSRange(output.startIndex..., in: output)),

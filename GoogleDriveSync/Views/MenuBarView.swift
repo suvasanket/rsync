@@ -1,8 +1,9 @@
 //
 //  MenuBarView.swift
-//  DriveSync
+//  GoogleDriveSync
 //
 //  Created by saihgupr on 2024-12-11.
+//  Updated on 2026-09-25.
 //
 
 import SwiftUI
@@ -10,7 +11,7 @@ import SwiftUI
 struct MenuBarView: View {
     @EnvironmentObject var syncManager: SyncManager
     @Environment(\.openSettings) private var openSettings
-    @State private var expandedErrorID: UUID? = nil
+    @LocalState private var expandedErrorID: UUID? = nil
     
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -29,7 +30,6 @@ struct MenuBarView: View {
             if !syncManager.isRcloneInstalled {
                 rcloneNotInstalledSection
             } else {
-                // Folders list (only show enabled folders)
                 let enabledFolders = syncManager.folders.filter { $0.isEnabled }
                 if enabledFolders.isEmpty {
                     emptyFoldersSection
@@ -59,7 +59,7 @@ struct MenuBarView: View {
     private var headerSection: some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 1) {
-                Text("GoogleDriveSync")
+                Text("rsync")
                     .font(.system(size: 13, weight: .semibold))
                 
                 Text(syncManager.statusText)
@@ -79,7 +79,6 @@ struct MenuBarView: View {
         Group {
             if syncManager.isSyncing {
                 VStack(alignment: .leading, spacing: 6) {
-                    // Progress bar with cancel button
                     HStack(spacing: 8) {
                         if let percent = syncManager.syncProgressPercent {
                             ProgressView(value: percent)
@@ -100,7 +99,6 @@ struct MenuBarView: View {
                         .help("Cancel sync")
                     }
                     
-                    // Progress details
                     HStack {
                         if let percent = syncManager.syncProgressPercent {
                             Text("\(Int(percent * 100))%")
@@ -118,6 +116,7 @@ struct MenuBarView: View {
                         Spacer()
                     }
                 }
+                .padding(.top, 4)
             }
         }
     }
@@ -236,7 +235,7 @@ struct MenuBarView: View {
                 .foregroundStyle(.secondary)
             
             Button("Add Folder") {
-                openSettings()
+                SettingsWindowManager.shared.show(syncManager: syncManager)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
@@ -249,10 +248,18 @@ struct MenuBarView: View {
         let enabledFolders = syncManager.folders.filter { $0.isEnabled }
         
         return VStack(alignment: .leading, spacing: 4) {
-            Text("Folders")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.bottom, 4)
+            HStack {
+                Text("Folders")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if syncManager.settings.watchForChanges {
+                    Label("Live Watch", systemImage: "bolt.fill")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.green)
+                }
+            }
+            .padding(.bottom, 4)
             
             ForEach(enabledFolders) { folder in
                 FolderRowView(folder: folder)
@@ -267,15 +274,14 @@ struct MenuBarView: View {
                     await syncManager.syncAll()
                 }
             } label: {
-                Label("Sync All", systemImage: "arrow.triangle.2.circlepath")
+                Label("Sync All Now", systemImage: "arrow.triangle.2.circlepath")
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.plain)
             .disabled(syncManager.isSyncing || syncManager.folders.isEmpty)
             
             Button {
-                NSApp.activate(ignoringOtherApps: true)
-                openSettings()
+                SettingsWindowManager.shared.show(syncManager: syncManager)
             } label: {
                 Label("Settings...", systemImage: "gear")
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -289,7 +295,7 @@ struct MenuBarView: View {
         Button {
             NSApplication.shared.terminate(nil)
         } label: {
-            Label("Quit GoogleDriveSync", systemImage: "power")
+            Label("Quit rsync", systemImage: "power")
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .buttonStyle(.plain)
@@ -308,9 +314,21 @@ struct FolderRowView: View {
             statusIcon
             
             VStack(alignment: .leading, spacing: 2) {
-                Text(folder.displayName)
-                    .font(.subheadline)
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(folder.displayName)
+                        .font(.subheadline)
+                        .lineLimit(1)
+                    
+                    if folder.syncMode == .bisync {
+                        Text("2-way")
+                            .font(.system(size: 8, weight: .semibold))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Color.blue.opacity(0.15))
+                            .foregroundStyle(.blue)
+                            .clipShape(Capsule())
+                    }
+                }
                 
                 Text(folder.remoteName)
                     .font(.caption)
@@ -341,9 +359,9 @@ struct FolderRowView: View {
                     NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: folder.localPath)
                 }
                 
-                Button("Open in Remote") {
-                    Task {
-                        await syncManager.openRemoteFolder(folder)
+                Button("Open Google Drive in Browser") {
+                    if let url = URL(string: "https://drive.google.com") {
+                        NSWorkspace.shared.open(url)
                     }
                 }
                 
@@ -388,9 +406,4 @@ struct FolderRowView: View {
         }
         .frame(width: 16)
     }
-}
-
-#Preview {
-    MenuBarView()
-        .environmentObject(SyncManager())
 }
