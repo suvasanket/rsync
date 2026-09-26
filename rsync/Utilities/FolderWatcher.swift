@@ -1,6 +1,6 @@
 //
 //  FolderWatcher.swift
-//  GoogleDriveSync
+//  rsync
 //
 //  Created by Pair Programming on 2026-09-25.
 //
@@ -34,7 +34,7 @@ final class FolderWatcher: @unchecked Sendable {
         self.ignoredPatterns = ignoredPatterns
         self.debounceDelay = debounceDelay
         self.onChange = onChange
-        self.queue = DispatchQueue(label: "com.googledrivesync.watcher.\(folderId.uuidString)", qos: .utility)
+        self.queue = DispatchQueue(label: "com.rsync.watcher.\(folderId.uuidString)", qos: .utility)
         self.queue.setSpecific(key: queueKey, value: ())
     }
     

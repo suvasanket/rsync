@@ -1,6 +1,6 @@
 //
 //  ProcessRunner.swift
-//  GoogleDriveSync
+//  rsync
 //
 //  Created by saihgupr on 2024-12-11.
 //  Optimized for low RAM usage on 2026-09-25.

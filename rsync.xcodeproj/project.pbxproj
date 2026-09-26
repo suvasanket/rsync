@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		4A1234560001 /* GoogleDriveSyncApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A1234550001 /* GoogleDriveSyncApp.swift */; };
+		4A1234560001 /* RsyncApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A1234550001 /* RsyncApp.swift */; };
 		4A1234560002 /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A1234550002 /* MenuBarView.swift */; };
 		4A1234560003 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A1234550003 /* SettingsView.swift */; };
 		4A1234560004 /* SyncManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A1234550004 /* SyncManager.swift */; };
@@ -16,11 +16,18 @@
 		4A1234560007 /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A1234550007 /* AppSettings.swift */; };
 		4A1234560008 /* ProcessRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A1234550008 /* ProcessRunner.swift */; };
 		4A1234560009 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4A1234550009 /* Assets.xcassets */; };
+		4A123456000A /* StorageProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A123455000C /* StorageProvider.swift */; };
+		4A123456000B /* FolderWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A123455000D /* FolderWatcher.swift */; };
+		4A123456000C /* ConfigStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A123455000E /* ConfigStore.swift */; };
+		4A123456000D /* LocalState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A123455000F /* LocalState.swift */; };
+		4A123456000E /* NetworkMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A1234550010 /* NetworkMonitor.swift */; };
+		4A123456000F /* SettingsWindowManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A1234550011 /* SettingsWindowManager.swift */; };
+		4A1234560010 /* LaunchAtLoginManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A1234550012 /* LaunchAtLoginManager.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		4A1234540001 /* GoogleDriveSync.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GoogleDriveSync.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		4A1234550001 /* GoogleDriveSyncApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleDriveSyncApp.swift; sourceTree = "<group>"; };
+		4A1234540001 /* rsync.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = rsync.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		4A1234550001 /* RsyncApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RsyncApp.swift; sourceTree = "<group>"; };
 		4A1234550002 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
 		4A1234550003 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		4A1234550004 /* SyncManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncManager.swift; sourceTree = "<group>"; };
@@ -30,7 +37,14 @@
 		4A1234550008 /* ProcessRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessRunner.swift; sourceTree = "<group>"; };
 		4A1234550009 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		4A123455000A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		4A123455000B /* GoogleDriveSync.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = GoogleDriveSync.entitlements; sourceTree = "<group>"; };
+		4A123455000B /* rsync.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = rsync.entitlements; sourceTree = "<group>"; };
+		4A123455000C /* StorageProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageProvider.swift; sourceTree = "<group>"; };
+		4A123455000D /* FolderWatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderWatcher.swift; sourceTree = "<group>"; };
+		4A123455000E /* ConfigStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigStore.swift; sourceTree = "<group>"; };
+		4A123455000F /* LocalState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalState.swift; sourceTree = "<group>"; };
+		4A1234550010 /* NetworkMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkMonitor.swift; sourceTree = "<group>"; };
+		4A1234550011 /* SettingsWindowManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowManager.swift; sourceTree = "<group>"; };
+		4A1234550012 /* LaunchAtLoginManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchAtLoginManager.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -47,30 +61,30 @@
 		4A1234510001 = {
 			isa = PBXGroup;
 			children = (
-				4A1234520001 /* GoogleDriveSync */,
+				4A1234520001 /* rsync */,
 				4A1234520002 /* Products */,
 			);
 			sourceTree = "<group>";
 		};
-		4A1234520001 /* GoogleDriveSync */ = {
+		4A1234520001 /* rsync */ = {
 			isa = PBXGroup;
 			children = (
-				4A1234550001 /* GoogleDriveSyncApp.swift */,
+				4A1234550001 /* RsyncApp.swift */,
 				4A1234520003 /* Views */,
 				4A1234520004 /* Managers */,
 				4A1234520005 /* Models */,
 				4A1234520006 /* Utilities */,
 				4A1234550009 /* Assets.xcassets */,
 				4A123455000A /* Info.plist */,
-				4A123455000B /* GoogleDriveSync.entitlements */,
+				4A123455000B /* rsync.entitlements */,
 			);
-			path = GoogleDriveSync;
+			path = rsync;
 			sourceTree = "<group>";
 		};
 		4A1234520002 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				4A1234540001 /* GoogleDriveSync.app */,
+				4A1234540001 /* rsync.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -98,6 +112,7 @@
 			children = (
 				4A1234550006 /* SyncFolder.swift */,
 				4A1234550007 /* AppSettings.swift */,
+				4A123455000C /* StorageProvider.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -106,6 +121,12 @@
 			isa = PBXGroup;
 			children = (
 				4A1234550008 /* ProcessRunner.swift */,
+				4A123455000D /* FolderWatcher.swift */,
+				4A123455000E /* ConfigStore.swift */,
+				4A123455000F /* LocalState.swift */,
+				4A1234550010 /* NetworkMonitor.swift */,
+				4A1234550011 /* SettingsWindowManager.swift */,
+				4A1234550012 /* LaunchAtLoginManager.swift */,
 			);
 			path = Utilities;
 			sourceTree = "<group>";
@@ -113,9 +134,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		4A1234530002 /* GoogleDriveSync */ = {
+		4A1234530002 /* rsync */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 4A1234570001 /* Build configuration list for PBXNativeTarget "GoogleDriveSync" */;
+			buildConfigurationList = 4A1234570001 /* Build configuration list for PBXNativeTarget "rsync" */;
 			buildPhases = (
 				4A1234530003 /* Sources */,
 				4A1234530001 /* Frameworks */,
@@ -125,9 +146,9 @@
 			);
 			dependencies = (
 			);
-			name = GoogleDriveSync;
-			productName = GoogleDriveSync;
-			productReference = 4A1234540001 /* GoogleDriveSync.app */;
+			name = rsync;
+			productName = rsync;
+			productReference = 4A1234540001 /* rsync.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -145,7 +166,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 4A1234570002 /* Build configuration list for PBXProject "GoogleDriveSync" */;
+			buildConfigurationList = 4A1234570002 /* Build configuration list for PBXProject "rsync" */;
 			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
@@ -158,7 +179,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				4A1234530002 /* GoogleDriveSync */,
+				4A1234530002 /* rsync */,
 			);
 		};
 /* End PBXProject section */
@@ -179,7 +200,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				4A1234560001 /* GoogleDriveSyncApp.swift in Sources */,
+				4A1234560001 /* RsyncApp.swift in Sources */,
 				4A1234560002 /* MenuBarView.swift in Sources */,
 				4A1234560003 /* SettingsView.swift in Sources */,
 				4A1234560004 /* SyncManager.swift in Sources */,
@@ -187,6 +208,13 @@
 				4A1234560006 /* SyncFolder.swift in Sources */,
 				4A1234560007 /* AppSettings.swift in Sources */,
 				4A1234560008 /* ProcessRunner.swift in Sources */,
+				4A123456000A /* StorageProvider.swift in Sources */,
+				4A123456000B /* FolderWatcher.swift in Sources */,
+				4A123456000C /* ConfigStore.swift in Sources */,
+				4A123456000D /* LocalState.swift in Sources */,
+				4A123456000E /* NetworkMonitor.swift in Sources */,
+				4A123456000F /* SettingsWindowManager.swift in Sources */,
+				4A1234560010 /* LaunchAtLoginManager.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -320,7 +348,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = GoogleDriveSync/GoogleDriveSync.entitlements;
+				CODE_SIGN_ENTITLEMENTS = rsync/rsync.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 2;
@@ -329,8 +357,8 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = GoogleDriveSync/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = GoogleDriveSync;
+				INFOPLIST_FILE = rsync/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = rsync;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -338,7 +366,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.1.3;
-				PRODUCT_BUNDLE_IDENTIFIER = com.saihgupr.drivesync;
+				PRODUCT_BUNDLE_IDENTIFIER = com.saihgupr.rsync;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
@@ -350,7 +378,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = GoogleDriveSync/GoogleDriveSync.entitlements;
+				CODE_SIGN_ENTITLEMENTS = rsync/rsync.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 2;
@@ -359,8 +387,8 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = GoogleDriveSync/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = GoogleDriveSync;
+				INFOPLIST_FILE = rsync/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = rsync;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -368,7 +396,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.1.3;
-				PRODUCT_BUNDLE_IDENTIFIER = com.saihgupr.drivesync;
+				PRODUCT_BUNDLE_IDENTIFIER = com.saihgupr.rsync;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
@@ -378,7 +406,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		4A1234570001 /* Build configuration list for PBXNativeTarget "GoogleDriveSync" */ = {
+		4A1234570001 /* Build configuration list for PBXNativeTarget "rsync" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				4A1234580003 /* Debug */,
@@ -387,7 +415,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		4A1234570002 /* Build configuration list for PBXProject "GoogleDriveSync" */ = {
+		4A1234570002 /* Build configuration list for PBXProject "rsync" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				4A1234580001 /* Debug */,

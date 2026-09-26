@@ -1,6 +1,6 @@
 //
 //  RcloneWrapper.swift
-//  GoogleDriveSync
+//  rsync
 //
 //  Created by saihgupr on 2024-12-11.
 //  Optimized on 2026-09-25.

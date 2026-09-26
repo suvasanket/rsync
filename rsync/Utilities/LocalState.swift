@@ -1,6 +1,6 @@
 //
 //  LocalState.swift
-//  GoogleDriveSync
+//  rsync
 //
 //  Created by Pair Programming on 2026-09-25.
 //

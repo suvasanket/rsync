@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-APP=${APP:-GoogleDriveSync}
+APP=${APP:-rsync}
 BUILD_DIR=${BUILD_DIR:-.build/debug}
 CODESIGN_ID=${CODESIGN_ID:-LocalDevCert}
 
@@ -15,11 +15,11 @@ mkdir -p "${MACOS_DIR}"
 mkdir -p "${RESOURCES_DIR}"
 
 # 1. Copy Info.plist
-cp GoogleDriveSync/Info.plist "${BUNDLE_NAME}/Contents/Info.plist"
+cp rsync/Info.plist "${BUNDLE_NAME}/Contents/Info.plist"
 
 # Update Info.plist variables
 plutil -replace CFBundleExecutable -string "${APP}" "${BUNDLE_NAME}/Contents/Info.plist" 2>/dev/null || true
-plutil -replace CFBundleIdentifier -string "com.saihgupr.GoogleDriveSync" "${BUNDLE_NAME}/Contents/Info.plist" 2>/dev/null || true
+plutil -replace CFBundleIdentifier -string "com.saihgupr.rsync" "${BUNDLE_NAME}/Contents/Info.plist" 2>/dev/null || true
 plutil -replace CFBundleName -string "${APP}" "${BUNDLE_NAME}/Contents/Info.plist" 2>/dev/null || true
 plutil -replace CFBundleIconFile -string "AppIcon" "${BUNDLE_NAME}/Contents/Info.plist" 2>/dev/null || true
 
@@ -29,7 +29,7 @@ cp "${BUILD_DIR}/${APP}" "${MACOS_DIR}/"
 # 3. Generate AppIcon.icns
 ICONSET_TMP="AppIcon.iconset"
 mkdir -p "${ICONSET_TMP}"
-cp GoogleDriveSync/Assets.xcassets/AppIcon.appiconset/icon_*.png "${ICONSET_TMP}/" 2>/dev/null || true
+cp rsync/Assets.xcassets/AppIcon.appiconset/icon_*.png "${ICONSET_TMP}/" 2>/dev/null || true
 if [ "$(ls -A ${ICONSET_TMP})" ]; then
     iconutil -c icns "${ICONSET_TMP}" -o "${RESOURCES_DIR}/AppIcon.icns" 2>/dev/null || true
 fi
@@ -41,7 +41,7 @@ if [ -d "${BUILD_DIR}/${APP}_${APP}.bundle" ]; then
 fi
 
 # 5. Codesign
-ENTITLEMENTS="GoogleDriveSync/GoogleDriveSync.entitlements"
+ENTITLEMENTS="rsync/rsync.entitlements"
 ENT_FLAG=""
 if [ -f "${ENTITLEMENTS}" ]; then
     ENT_FLAG="--entitlements ${ENTITLEMENTS}"

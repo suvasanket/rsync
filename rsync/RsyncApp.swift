@@ -1,6 +1,6 @@
 //
-//  GoogleDriveSyncApp.swift
-//  GoogleDriveSync
+//  RsyncApp.swift
+//  rsync
 //
 //  Created by saihgupr on 2024-12-11.
 //

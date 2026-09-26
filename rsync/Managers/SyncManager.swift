@@ -108,6 +108,14 @@ class SyncManager: ObservableObject {
         
         self.rclone = RcloneWrapper(rclonePath: self.settings.rclonePath)
         
+        // Synchronize launch-at-login state
+        LaunchAtLoginManager.shared.refreshStatus()
+        if self.settings.launchAtLogin {
+            LaunchAtLoginManager.shared.setEnabled(true)
+        } else if LaunchAtLoginManager.shared.isEnabled {
+            self.settings.launchAtLogin = true
+        }
+        
         setupNetworkObserver()
         
         NotificationCenter.default.addObserver(
@@ -874,14 +882,6 @@ class SyncManager: ObservableObject {
     // MARK: - Launch at Login
     
     private func updateLaunchAtLogin() {
-        do {
-            if settings.launchAtLogin {
-                try SMAppService.mainApp.register()
-            } else {
-                try SMAppService.mainApp.unregister()
-            }
-        } catch {
-            print("Failed to update launch at login: \(error)")
-        }
+        LaunchAtLoginManager.shared.setEnabled(settings.launchAtLogin)
     }
 }

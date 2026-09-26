@@ -1,6 +1,6 @@
 //
 //  SettingsView.swift
-//  GoogleDriveSync
+//  rsync
 //
 //  Created by saihgupr on 2024-12-11.
 //
@@ -426,7 +426,7 @@ struct AddFolderSheet: View {
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = true
         panel.prompt = "Choose Folder"
-        panel.message = "Select a local folder to sync with Google Drive"
+        panel.message = "Select a local folder to sync"
         panel.level = .floating
         
         panel.begin { response in
@@ -579,7 +579,7 @@ struct EditFolderSheet: View {
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = true
         panel.prompt = "Choose Folder"
-        panel.message = "Select a local folder to sync with Google Drive"
+        panel.message = "Select a local folder to sync"
         panel.level = .floating
         
         panel.begin { response in
@@ -1250,6 +1250,7 @@ struct RenameAccountSheet: View {
 
 struct GeneralSettingsView: View {
     @EnvironmentObject var syncManager: SyncManager
+    @ObservedObject private var launchAtLoginManager = LaunchAtLoginManager.shared
     @LocalState private var showingResetConfirmation = false
     
     var body: some View {
@@ -1342,8 +1343,31 @@ struct GeneralSettingsView: View {
                 Toggle("Show notifications after sync", isOn: $syncManager.settings.showNotifications)
                 Toggle("Notify on Error", isOn: $syncManager.settings.notifyOnError)
                 Toggle("Launch at login", isOn: $syncManager.settings.launchAtLogin)
+                
+                if launchAtLoginManager.requiresApproval {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.orange)
+                        Text("Requires approval in macOS Login Items")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Button("Open Settings") {
+                            launchAtLoginManager.openSystemSettingsLoginItems()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    }
+                    .padding(.vertical, 2)
+                }
             } header: {
                 Text("App Behavior")
+            } footer: {
+                if !launchAtLoginManager.statusDescription.isEmpty {
+                    Text(launchAtLoginManager.statusDescription)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             
             Section {
@@ -1356,6 +1380,9 @@ struct GeneralSettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
+        .onAppear {
+            launchAtLoginManager.refreshStatus()
+        }
         .onChange(of: syncManager.settings) { _, _ in
             syncManager.saveSettings()
         }

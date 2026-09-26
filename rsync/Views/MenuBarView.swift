@@ -1,6 +1,6 @@
 //
 //  MenuBarView.swift
-//  GoogleDriveSync
+//  rsync
 //
 //  Created by saihgupr on 2024-12-11.
 //  Updated on 2026-09-25.

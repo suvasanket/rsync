@@ -13,10 +13,10 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "rsync",
-            path: "GoogleDriveSync",
+            path: "rsync",
             exclude: [
                 "Info.plist",
-                "GoogleDriveSync.entitlements",
+                "rsync.entitlements",
                 "Assets.xcassets"
             ]
         )
