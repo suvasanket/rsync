@@ -40,7 +40,7 @@ class SyncManager: ObservableObject {
         if !isRcloneInstalled {
             return "exclamationmark.icloud"
         } else if !isOnline {
-            return "cloud.slash"
+            return "icloud.slash"
         } else if isSyncing {
             return "arrow.triangle.2.circlepath.icloud"
         } else if enabledFolders.contains(where: { $0.lastSyncStatus == .error }) {
@@ -326,9 +326,61 @@ class SyncManager: ObservableObject {
     }
     
     /// Adds a new Google Drive remote using in-app browser OAuth flow
-    func addNewDriveRemote(name: String) async throws {
-        try await rclone.createDriveAccount(name: name)
+    func addNewDriveRemote(name: String, clientId: String? = nil, clientSecret: String? = nil) async throws {
+        try await rclone.createDriveAccount(name: name, clientId: clientId, clientSecret: clientSecret)
         await refreshRemotes()
+    }
+    
+    /// Adds an OAuth-based remote (OneDrive, Dropbox, Box, pCloud, etc.)
+    func addOAuthAccount(
+        name: String,
+        type: String,
+        clientId: String? = nil,
+        clientSecret: String? = nil,
+        extraConfig: [String: String] = [:]
+    ) async throws {
+        try await rclone.createOAuthAccount(
+            name: name,
+            type: type,
+            clientId: clientId,
+            clientSecret: clientSecret,
+            extraConfig: extraConfig
+        )
+        await refreshRemotes()
+    }
+    
+    /// Adds a credential or key-based remote (MEGA, WebDAV, Nextcloud, S3, B2, SFTP, etc.)
+    func addConfigAccount(
+        name: String,
+        type: String,
+        options: [String: String]
+    ) async throws {
+        try await rclone.createConfigAccount(name: name, type: type, options: options)
+        await refreshRemotes()
+    }
+    
+    /// Launch the interactive terminal configuration wizard
+    func openTerminalConfig() {
+        rclone.openTerminalConfig()
+    }
+    
+    /// Pings and verifies connectivity to a specific remote
+    func pingRemote(name: String) async -> RemotePingResult {
+        await rclone.pingRemote(name: name)
+    }
+    
+    /// Force a baseline resync for a two-way sync folder
+    func resyncFolder(_ folder: SyncFolder) async {
+        guard isOnline else { return }
+        guard !isSyncing else { return }
+        
+        let folderID = folder.id
+        guard let index = folders.firstIndex(where: { $0.id == folderID }) else { return }
+        
+        folders[index].bisyncState = .needsResync
+        folders[index].lastError = nil
+        saveFolders()
+        await syncFolder(folders[index])
     }
     
     /// Rename a remote
@@ -458,6 +510,7 @@ class SyncManager: ObservableObject {
             let resolvedPath = resolveLocalPath(localPath)
 
             do {
+                await rclone.ensureRemoteDirectoryExists(remotePath)
                 let result: SyncResult
 
                 switch syncMode {
@@ -577,6 +630,7 @@ class SyncManager: ObservableObject {
         let resolvedPath = resolveLocalPath(localPath)
         
         do {
+            await rclone.ensureRemoteDirectoryExists(remotePath)
             let result: SyncResult
 
             switch syncMode {

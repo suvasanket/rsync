@@ -37,6 +37,8 @@ final class SettingsWindowManager {
             defer: false
         )
         newWindow.title = "rsync Settings"
+        newWindow.backgroundColor = NSColor.windowBackgroundColor
+        newWindow.isOpaque = true
         newWindow.contentViewController = hostingController
         newWindow.center()
         newWindow.isReleasedWhenClosed = false

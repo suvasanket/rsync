@@ -47,6 +47,23 @@ struct RcloneRemote: Identifiable, Equatable, Hashable {
         "\(name) (\(type))"
     }
     
+    var providerIcon: String {
+        switch type.lowercased() {
+        case "drive": return "externaldrive.badge.icloud"
+        case "mega": return "m.circle.fill"
+        case "onedrive": return "cloud.fill"
+        case "dropbox": return "shippingbox.fill"
+        case "box": return "archivebox.fill"
+        case "pcloud": return "p.circle.fill"
+        case "webdav": return "network"
+        case "s3": return "server.rack"
+        case "b2": return "cylinder.split.1x2.fill"
+        case "sftp": return "terminal.fill"
+        case "protondrive": return "lock.shield.fill"
+        default: return "externaldrive.fill"
+        }
+    }
+    
     func hash(into hasher: inout Hasher) {
         hasher.combine(name)
         hasher.combine(type)
@@ -55,6 +72,12 @@ struct RcloneRemote: Identifiable, Equatable, Hashable {
     static func == (lhs: RcloneRemote, rhs: RcloneRemote) -> Bool {
         lhs.name == rhs.name && lhs.type == rhs.type
     }
+}
+
+struct RemotePingResult: Sendable, Equatable {
+    let isSuccess: Bool
+    let latencyMs: Int?
+    let message: String
 }
 
 actor RcloneWrapper {
@@ -72,6 +95,60 @@ actor RcloneWrapper {
     /// Cancel any currently running sync operation
     func cancelCurrentOperation() async {
         await runner.terminateCurrentProcess()
+    }
+    
+    // MARK: - Connectivity / Ping Check
+    
+    /// Pings and verifies connectivity to a specific remote
+    func pingRemote(name: String) async -> RemotePingResult {
+        let startTime = Date()
+        do {
+            let result = try await runner.run(
+                rclonePath,
+                arguments: configArgs + [
+                    "lsd",
+                    "\(name):",
+                    "--max-depth", "1",
+                    "--contimeout", "6s",
+                    "--timeout", "10s"
+                ]
+            )
+            let latency = Int(Date().timeIntervalSince(startTime) * 1000)
+            if result.isSuccess {
+                return RemotePingResult(
+                    isSuccess: true,
+                    latencyMs: latency,
+                    message: "Connected (\(latency)ms)"
+                )
+            } else {
+                let raw = result.stderr.isEmpty ? result.stdout : result.stderr
+                let clean = raw.components(separatedBy: "\n")
+                    .first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) ?? "Connection failed"
+                return RemotePingResult(
+                    isSuccess: false,
+                    latencyMs: latency,
+                    message: clean
+                )
+            }
+        } catch {
+            let latency = Int(Date().timeIntervalSince(startTime) * 1000)
+            return RemotePingResult(
+                isSuccess: false,
+                latencyMs: latency,
+                message: error.localizedDescription
+            )
+        }
+    }
+    
+    /// Ensures the destination remote folder exists prior to syncing
+    func ensureRemoteDirectoryExists(_ remotePath: String) async {
+        let parts = remotePath.components(separatedBy: ":")
+        if parts.count >= 2 {
+            let subPath = parts[1].trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+            if !subPath.isEmpty {
+                _ = try? await runner.run(rclonePath, arguments: configArgs + ["mkdir", remotePath])
+            }
+        }
     }
     
     // MARK: - Installation Check
@@ -117,7 +194,31 @@ actor RcloneWrapper {
     }
     
     /// Creates a new Google Drive remote using in-app browser OAuth flow
-    func createDriveAccount(name: String) async throws {
+    func createDriveAccount(name: String, clientId: String? = nil, clientSecret: String? = nil) async throws {
+        var extra: [String: String] = ["scope": "drive"]
+        if let clientId = clientId, !clientId.isEmpty {
+            extra["client_id"] = clientId
+        }
+        if let clientSecret = clientSecret, !clientSecret.isEmpty {
+            extra["client_secret"] = clientSecret
+        }
+        try await createOAuthAccount(
+            name: name,
+            type: "drive",
+            clientId: clientId,
+            clientSecret: clientSecret,
+            extraConfig: extra
+        )
+    }
+    
+    /// Generic OAuth account creator (Google Drive, OneDrive, Dropbox, Box, pCloud, etc.)
+    func createOAuthAccount(
+        name: String,
+        type: String,
+        clientId: String? = nil,
+        clientSecret: String? = nil,
+        extraConfig: [String: String] = [:]
+    ) async throws {
         final class AuthState: @unchecked Sendable {
             private let lock = NSLock()
             private var _output = ""
@@ -147,8 +248,13 @@ actor RcloneWrapper {
         }
         
         let state = AuthState()
+        var authArgs = ["authorize", type]
+        if let id = clientId, !id.trimmingCharacters(in: .whitespaces).isEmpty,
+           let secret = clientSecret, !secret.trimmingCharacters(in: .whitespaces).isEmpty {
+            authArgs.append(contentsOf: [id.trimmingCharacters(in: .whitespaces), secret.trimmingCharacters(in: .whitespaces)])
+        }
         
-        let result = try await runner.runWithProgress(rclonePath, arguments: ["authorize", "drive"]) { output in
+        let result = try await runner.runWithProgress(rclonePath, arguments: authArgs) { output in
             state.append(output)
             
             let pattern = #"http://127\.0\.0\.1:\d+/auth\S*"#
@@ -165,46 +271,75 @@ actor RcloneWrapper {
         }
         
         guard result.isSuccess else {
-            throw RcloneError.configurationFailed("Google Drive authentication was cancelled or failed.")
+            throw RcloneError.configurationFailed("\(type) authentication was cancelled or failed.")
         }
         
         let combined = result.stdout.isEmpty ? state.output : result.stdout
         
         // Parse token JSON
         guard let tokenRange = combined.range(of: #"\{[\s\S]*"access_token"[\s\S]*\}"#, options: .regularExpression) else {
-            throw RcloneError.configurationFailed("Did not receive valid Google Drive token. Please try again.")
+            throw RcloneError.configurationFailed("Did not receive a valid OAuth token. Please try again.")
         }
         
         let tokenJson = String(combined[tokenRange]).trimmingCharacters(in: .whitespacesAndNewlines)
         
-        // Create remote in rclone config with the OAuth token
-        let createResult = try await runner.run(rclonePath, arguments: configArgs + [
-            "config", "create", name, "drive",
-            "scope", "drive",
+        // Create remote in rclone config with the OAuth token and extra options
+        var createArgs = configArgs + [
+            "config", "create", name, type,
             "token", tokenJson
-        ])
+        ]
         
+        for (key, val) in extraConfig {
+            createArgs.append(contentsOf: [key, val])
+        }
+        
+        let createResult = try await runner.run(rclonePath, arguments: createArgs)
         guard createResult.isSuccess else {
             throw RcloneError.configurationFailed("Failed to save remote config: \(createResult.stderr)")
         }
     }
     
-    /// Rename an existing remote
-    func renameRemote(from oldName: String, to newName: String) async throws {
-        let showResult = try await runner.run(rclonePath, arguments: configArgs + ["config", "show", oldName])
-        guard showResult.isSuccess else {
-            throw RcloneError.invalidRemote(oldName)
-        }
+    /// Creates a credential or key-based remote (MEGA, WebDAV, Nextcloud, S3, B2, SFTP, etc.)
+    func createConfigAccount(
+        name: String,
+        type: String,
+        options: [String: String]
+    ) async throws {
+        var createArgs = configArgs + ["config", "create", name, type, "--obscure"]
         
-        let configLines = showResult.stdout.components(separatedBy: "\n")
-        var token = ""
-        for line in configLines {
-            if line.hasPrefix("token = ") {
-                token = String(line.dropFirst("token = ".count))
+        for (k, v) in options {
+            let key = k.trimmingCharacters(in: .whitespaces)
+            let val = v.trimmingCharacters(in: .whitespaces)
+            if !key.isEmpty && !val.isEmpty {
+                createArgs.append(contentsOf: [key, val])
             }
         }
         
-        let createArgs = ["config", "create", newName, "drive", "token", token]
+        let result = try await runner.run(rclonePath, arguments: createArgs)
+        guard result.isSuccess else {
+            throw RcloneError.configurationFailed("Failed to configure remote '\(name)': \(result.stderr.isEmpty ? result.stdout : result.stderr)")
+        }
+    }
+    
+    /// Rename an existing remote across any provider type
+    func renameRemote(from oldName: String, to newName: String) async throws {
+        let dumpResult = try await runner.run(rclonePath, arguments: configArgs + ["config", "dump"])
+        guard dumpResult.isSuccess,
+              let data = dumpResult.stdout.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: [String: Any]],
+              let remoteConfig = json[oldName],
+              let type = remoteConfig["type"] as? String else {
+            throw RcloneError.invalidRemote(oldName)
+        }
+        
+        var createArgs = ["config", "create", newName, type, "--no-obscure"]
+        for (key, val) in remoteConfig {
+            if key == "type" { continue }
+            if let stringVal = val as? String, !stringVal.isEmpty {
+                createArgs.append(contentsOf: [key, stringVal])
+            }
+        }
+        
         let createResult = try await runner.run(rclonePath, arguments: configArgs + createArgs)
         guard createResult.isSuccess else {
             throw RcloneError.configurationFailed("Failed to create new remote: \(createResult.stderr)")
@@ -222,6 +357,16 @@ actor RcloneWrapper {
         let result = try await runner.run(rclonePath, arguments: configArgs + ["config", "delete", name])
         guard result.isSuccess else {
             throw RcloneError.configurationFailed("Failed to delete remote: \(result.stderr)")
+        }
+    }
+    
+    /// Launch interactive rclone terminal wizard for all 40+ rclone providers
+    nonisolated func openTerminalConfig() {
+        let confPath = ConfigStore.shared.rcloneConfigURL.path
+        let script = "tell application \"Terminal\" to do script \"'\(rclonePath)' config --config '\(confPath)'\""
+        if let appleScript = NSAppleScript(source: script) {
+            var error: NSDictionary?
+            appleScript.executeAndReturnError(&error)
         }
     }
     
@@ -301,8 +446,9 @@ actor RcloneWrapper {
             "--conflict-resolve", "newer"
         ]
 
-        if mode == .initial {
-            args.append(contentsOf: ["--resync-mode", "newer"])
+        if mode == .initial || mode == .resync {
+            let resyncMode = remote.lowercased().hasPrefix("mega:") ? "path1" : "newer"
+            args.append(contentsOf: ["--resync", "--resync-mode", resyncMode])
         }
 
         for pattern in ignoredPatterns {
@@ -331,7 +477,11 @@ actor RcloneWrapper {
 
         guard result.isSuccess else {
             let errorMessage = result.stderr.isEmpty ? result.stdout : result.stderr
-            if result.exitCode == 7 {
+            if result.exitCode == 7 ||
+               errorMessage.localizedCaseInsensitiveContains("too many deletes") ||
+               errorMessage.localizedCaseInsensitiveContains("must run --resync") ||
+               errorMessage.localizedCaseInsensitiveContains("needs resync") ||
+               errorMessage.localizedCaseInsensitiveContains("bisync aborted") {
                 throw RcloneError.bisyncNeedsResync(errorMessage)
             }
             throw RcloneError.syncFailed(errorMessage)

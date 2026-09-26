@@ -240,6 +240,20 @@ struct FolderSettingsRow: View {
                 .controlSize(.small)
                 .labelsHidden()
                 
+                if folder.syncMode == .bisync {
+                    Button {
+                        Task {
+                            await syncManager.resyncFolder(folder)
+                        }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 13))
+                            .foregroundStyle(folder.bisyncState == .needsResync ? .yellow : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Resync folder baseline")
+                }
+                
                 Button {
                     onEdit()
                 } label: {
@@ -582,41 +596,111 @@ struct AddAccountSheet: View {
     @EnvironmentObject var syncManager: SyncManager
     @Environment(\.dismiss) private var dismiss
     
+    @LocalState private var selectedProvider: StorageProvider = StorageProvider.supportedProviders[0]
     @LocalState private var accountName: String = ""
     @LocalState private var isAuthenticating: Bool = false
     @LocalState private var authError: String? = nil
     
+    // OAuth options
+    @LocalState private var clientId: String = ""
+    @LocalState private var clientSecret: String = ""
+    @LocalState private var showCustomClientId: Bool = false
+    
+    // Credentials (MEGA, WebDAV, Proton, SFTP)
+    @LocalState private var username: String = ""
+    @LocalState private var password: String = ""
+    @LocalState private var twoFactorCode: String = ""
+    
+    // WebDAV
+    @LocalState private var webdavURL: String = ""
+    @LocalState private var webdavVendor: String = "nextcloud"
+    
+    // S3
+    @LocalState private var s3Provider: String = "Cloudflare"
+    @LocalState private var s3Endpoint: String = ""
+    @LocalState private var s3AccessKey: String = ""
+    @LocalState private var s3SecretKey: String = ""
+    @LocalState private var s3Region: String = ""
+    
+    // B2
+    @LocalState private var b2AccountId: String = ""
+    @LocalState private var b2ApplicationKey: String = ""
+    
+    // SFTP
+    @LocalState private var sftpHost: String = ""
+    @LocalState private var sftpPort: String = "22"
+    @LocalState private var sftpKeyFile: String = ""
+    
+    // Custom
+    @LocalState private var customType: String = ""
+    @LocalState private var customOptions: String = ""
+    
     var body: some View {
-        VStack(spacing: 25) {
-            Image(systemName: "safari.fill")
-                .font(.system(size: 50))
-                .foregroundStyle(.blue.gradient)
-            
-            VStack(spacing: 12) {
-                Text("Connect Google Drive")
-                    .font(.title3.bold())
+        VStack(spacing: 16) {
+            HStack(spacing: 12) {
+                Image(systemName: selectedProvider.icon)
+                    .font(.system(size: 28))
+                    .foregroundStyle(.blue)
+                    .frame(width: 36, height: 36)
                 
-                Text("Give your account a name. This will open your web browser to sign in to Google Drive.")
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Connect \(selectedProvider.name)")
+                        .font(.headline)
+                    Text(selectedProvider.subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                
+                Spacer()
             }
             
-            VStack(alignment: .leading, spacing: 8) {
-                TextField("Account Name (e.g. Work Drive)", text: $accountName)
-                    .textFieldStyle(.roundedBorder)
-                    .disabled(isAuthenticating)
-                
-                if let error = authError {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .fixedSize(horizontal: false, vertical: true)
+            Picker("Storage Provider", selection: $selectedProvider) {
+                ForEach(StorageProvider.supportedProviders) { provider in
+                    Text(provider.name).tag(provider)
                 }
             }
-            .padding(.horizontal)
+            .pickerStyle(.menu)
             
-            HStack(spacing: 16) {
+            Divider()
+            
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Account Name")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                        TextField("e.g. My_\(selectedProvider.id)", text: $accountName)
+                            .textFieldStyle(.roundedBorder)
+                            .disabled(isAuthenticating)
+                    }
+                    
+                    providerSpecificForm
+                }
+                .padding(.vertical, 4)
+            }
+            .frame(maxHeight: 280)
+            
+            if let error = authError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            
+            Divider()
+            
+            HStack(spacing: 12) {
+                if selectedProvider.authType == .custom {
+                    Button("Terminal Setup Wizard...") {
+                        syncManager.openTerminalConfig()
+                        dismiss()
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.blue)
+                }
+                
+                Spacer()
+                
                 Button("Cancel") {
                     dismiss()
                 }
@@ -628,12 +712,12 @@ struct AddAccountSheet: View {
                 } label: {
                     if isAuthenticating {
                         HStack {
-                            Text("Authenticating...")
+                            Text("Connecting...")
                             ProgressView()
                                 .controlSize(.small)
                         }
                     } else {
-                        Text("Connect Account")
+                        Text(selectedProvider.authType == .oauth ? "Open Browser & Connect" : "Connect Account")
                     }
                 }
                 .buttonStyle(.borderedProminent)
@@ -641,8 +725,141 @@ struct AddAccountSheet: View {
                 .disabled(sanitizedName.isEmpty || isAuthenticating)
             }
         }
-        .padding(30)
-        .frame(width: 400)
+        .padding(24)
+        .frame(width: 480)
+    }
+    
+    @ViewBuilder
+    private var providerSpecificForm: some View {
+        switch selectedProvider.authType {
+        case .oauth:
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Clicking Connect will open your browser to log in securely.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                
+                if selectedProvider.id == "drive" {
+                    DisclosureGroup(
+                        "Custom Google Client ID (Optional)",
+                        isExpanded: $showCustomClientId
+                    ) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Optional: Avoid Google's retiring shared client_id and rate limits.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            
+                            TextField("Client ID", text: $clientId)
+                                .textFieldStyle(.roundedBorder)
+                            
+                            SecureField("Client Secret", text: $clientSecret)
+                                .textFieldStyle(.roundedBorder)
+                        }
+                        .padding(.top, 4)
+                    }
+                    .font(.caption)
+                }
+            }
+            
+        case .mega:
+            VStack(alignment: .leading, spacing: 8) {
+                Text("MEGA Credentials")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                TextField("MEGA Email Address", text: $username)
+                    .textFieldStyle(.roundedBorder)
+                SecureField("MEGA Password", text: $password)
+                    .textFieldStyle(.roundedBorder)
+                TextField("2FA Code (Optional)", text: $twoFactorCode)
+                    .textFieldStyle(.roundedBorder)
+                Text("Password is encrypted locally in ~/.rsync/rclone.conf.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            
+        case .webdav:
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Server & Credentials")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                TextField("Server URL (e.g. https://cloud.example.com/remote.php/dav/files/user/)", text: $webdavURL)
+                    .textFieldStyle(.roundedBorder)
+                Picker("Vendor", selection: $webdavVendor) {
+                    Text("Nextcloud").tag("nextcloud")
+                    Text("ownCloud").tag("owncloud")
+                    Text("Fastmail").tag("fastmail")
+                    Text("Other WebDAV").tag("other")
+                }
+                TextField("Username", text: $username)
+                    .textFieldStyle(.roundedBorder)
+                SecureField("Password or App Password", text: $password)
+                    .textFieldStyle(.roundedBorder)
+            }
+            
+        case .s3:
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("S3 Provider", selection: $s3Provider) {
+                    Text("Cloudflare R2").tag("Cloudflare")
+                    Text("Amazon AWS S3").tag("AWS")
+                    Text("Wasabi").tag("Wasabi")
+                    Text("MinIO").tag("Minio")
+                    Text("Other S3 Compatible").tag("Other")
+                }
+                TextField("Endpoint URL (optional for AWS)", text: $s3Endpoint)
+                    .textFieldStyle(.roundedBorder)
+                TextField("Access Key ID", text: $s3AccessKey)
+                    .textFieldStyle(.roundedBorder)
+                SecureField("Secret Access Key", text: $s3SecretKey)
+                    .textFieldStyle(.roundedBorder)
+                TextField("Region (optional)", text: $s3Region)
+                    .textFieldStyle(.roundedBorder)
+            }
+            
+        case .b2:
+            VStack(alignment: .leading, spacing: 8) {
+                TextField("Account ID / Key ID", text: $b2AccountId)
+                    .textFieldStyle(.roundedBorder)
+                SecureField("Application Key", text: $b2ApplicationKey)
+                    .textFieldStyle(.roundedBorder)
+            }
+            
+        case .sftp:
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    TextField("Host (e.g. sftp.example.com)", text: $sftpHost)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("Port", text: $sftpPort)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 70)
+                }
+                TextField("Username", text: $username)
+                    .textFieldStyle(.roundedBorder)
+                SecureField("Password (optional if using key)", text: $password)
+                    .textFieldStyle(.roundedBorder)
+                TextField("Private Key File Path (optional)", text: $sftpKeyFile)
+                    .textFieldStyle(.roundedBorder)
+            }
+            
+        case .protondrive:
+            VStack(alignment: .leading, spacing: 8) {
+                TextField("Proton Username", text: $username)
+                    .textFieldStyle(.roundedBorder)
+                SecureField("Proton Password", text: $password)
+                    .textFieldStyle(.roundedBorder)
+                TextField("2FA Code (Optional)", text: $twoFactorCode)
+                    .textFieldStyle(.roundedBorder)
+            }
+            
+        case .custom:
+            VStack(alignment: .leading, spacing: 8) {
+                TextField("Rclone Backend Type (e.g. koofr, zoho, yandex)", text: $customType)
+                    .textFieldStyle(.roundedBorder)
+                TextField("Parameters (key=value separated by spaces)", text: $customOptions)
+                    .textFieldStyle(.roundedBorder)
+                Text("Click 'Terminal Setup Wizard' below to configure using rclone's interactive CLI.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
     
     private var sanitizedName: String {
@@ -655,7 +872,6 @@ struct AddAccountSheet: View {
     private func authenticate() {
         guard !sanitizedName.isEmpty else { return }
         
-        // Check if name already exists
         if syncManager.availableRemotes.contains(where: { $0.name == sanitizedName }) {
             authError = "An account with this name already exists."
             return
@@ -666,7 +882,94 @@ struct AddAccountSheet: View {
         
         Task {
             do {
-                try await syncManager.addNewDriveRemote(name: sanitizedName)
+                switch selectedProvider.authType {
+                case .oauth:
+                    var extra: [String: String] = [:]
+                    if selectedProvider.id == "drive" {
+                        extra["scope"] = "drive"
+                    }
+                    try await syncManager.addOAuthAccount(
+                        name: sanitizedName,
+                        type: selectedProvider.id,
+                        clientId: clientId.isEmpty ? nil : clientId,
+                        clientSecret: clientSecret.isEmpty ? nil : clientSecret,
+                        extraConfig: extra
+                    )
+                    
+                case .mega:
+                    guard !username.isEmpty, !password.isEmpty else {
+                        throw RcloneError.configurationFailed("Email and Password are required for MEGA.")
+                    }
+                    var opts: [String: String] = ["user": username, "pass": password]
+                    if !twoFactorCode.isEmpty {
+                        opts["2fa"] = twoFactorCode
+                    }
+                    try await syncManager.addConfigAccount(name: sanitizedName, type: "mega", options: opts)
+                    
+                case .webdav:
+                    guard !webdavURL.isEmpty, !username.isEmpty, !password.isEmpty else {
+                        throw RcloneError.configurationFailed("Server URL, Username, and Password are required.")
+                    }
+                    let opts = ["url": webdavURL, "vendor": webdavVendor, "user": username, "pass": password]
+                    try await syncManager.addConfigAccount(name: sanitizedName, type: "webdav", options: opts)
+                    
+                case .s3:
+                    guard !s3AccessKey.isEmpty, !s3SecretKey.isEmpty else {
+                        throw RcloneError.configurationFailed("Access Key ID and Secret Access Key are required.")
+                    }
+                    var opts = ["provider": s3Provider, "access_key_id": s3AccessKey, "secret_access_key": s3SecretKey]
+                    if !s3Endpoint.isEmpty { opts["endpoint"] = s3Endpoint }
+                    if !s3Region.isEmpty { opts["region"] = s3Region }
+                    try await syncManager.addConfigAccount(name: sanitizedName, type: "s3", options: opts)
+                    
+                case .b2:
+                    guard !b2AccountId.isEmpty, !b2ApplicationKey.isEmpty else {
+                        throw RcloneError.configurationFailed("Account ID and Application Key are required.")
+                    }
+                    let opts = ["account": b2AccountId, "key": b2ApplicationKey]
+                    try await syncManager.addConfigAccount(name: sanitizedName, type: "b2", options: opts)
+                    
+                case .sftp:
+                    guard !sftpHost.isEmpty, !username.isEmpty else {
+                        throw RcloneError.configurationFailed("Host and Username are required.")
+                    }
+                    var opts = ["host": sftpHost, "port": sftpPort.isEmpty ? "22" : sftpPort, "user": username]
+                    if !password.isEmpty { opts["pass"] = password }
+                    if !sftpKeyFile.isEmpty { opts["key_file"] = sftpKeyFile }
+                    try await syncManager.addConfigAccount(name: sanitizedName, type: "sftp", options: opts)
+                    
+                case .protondrive:
+                    guard !username.isEmpty, !password.isEmpty else {
+                        throw RcloneError.configurationFailed("Username and Password are required.")
+                    }
+                    var opts = ["username": username, "password": password]
+                    if !twoFactorCode.isEmpty { opts["2fa"] = twoFactorCode }
+                    try await syncManager.addConfigAccount(name: sanitizedName, type: "protondrive", options: opts)
+                    
+                case .custom:
+                    let type = customType.trimmingCharacters(in: .whitespaces)
+                    guard !type.isEmpty else {
+                        throw RcloneError.configurationFailed("Rclone backend type is required.")
+                    }
+                    var opts: [String: String] = [:]
+                    let pairs = customOptions.components(separatedBy: " ")
+                    for pair in pairs {
+                        let parts = pair.components(separatedBy: "=")
+                        if parts.count == 2 {
+                            opts[parts[0]] = parts[1]
+                        }
+                    }
+                    try await syncManager.addConfigAccount(name: sanitizedName, type: type, options: opts)
+                }
+                
+                // Verify link via ping check before closing sheet
+                let ping = await syncManager.pingRemote(name: sanitizedName)
+                if !ping.isSuccess {
+                    authError = "Account created, but connection check failed:\n\(ping.message)"
+                    isAuthenticating = false
+                    return
+                }
+                
                 dismiss()
             } catch {
                 authError = error.localizedDescription
@@ -683,6 +986,8 @@ struct AccountsSettingsView: View {
     @LocalState private var showingAddAccountSheet = false
     @LocalState private var showingRenameSheet = false
     @LocalState private var accountToRename: RcloneRemote?
+    @LocalState private var pingResults: [String: RemotePingResult] = [:]
+    @LocalState private var pingingRemotes: Set<String> = []
     
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -700,35 +1005,81 @@ struct AccountsSettingsView: View {
                     Text("No accounts connected")
                         .font(.title3)
                     
-                    Button {
-                        showingAddAccountSheet = true
-                    } label: {
-                        Label("Connect Account", systemImage: "link")
+                    HStack(spacing: 12) {
+                        Button {
+                            showingAddAccountSheet = true
+                        } label: {
+                            Label("Connect Account", systemImage: "link")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        
+                        Button {
+                            syncManager.openTerminalConfig()
+                        } label: {
+                            Label("Terminal Setup...", systemImage: "terminal")
+                        }
+                        .buttonStyle(.bordered)
                     }
-                    .buttonStyle(.borderedProminent)
                     
                     Spacer()
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(syncManager.availableRemotes) { remote in
-                    HStack {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
+                    HStack(spacing: 12) {
+                        Image(systemName: remote.providerIcon)
+                            .font(.system(size: 20))
+                            .foregroundStyle(.blue)
+                            .frame(width: 28)
                         
-                        VStack(alignment: .leading) {
+                        VStack(alignment: .leading, spacing: 2) {
                             Text(remote.name)
-                                .font(.body)
-                            Text(remote.type)
-                                .font(.caption)
+                                .font(.body.weight(.medium))
+                            Text(remote.type.uppercased())
+                                .font(.system(size: 10, weight: .bold))
                                 .foregroundStyle(.secondary)
                         }
                         
                         Spacer()
                         
-                        Text("Connected")
-                            .font(.caption)
-                            .foregroundStyle(.green)
+                        if pingingRemotes.contains(remote.name) {
+                            HStack(spacing: 4) {
+                                ProgressView()
+                                    .controlSize(.mini)
+                                Text("Testing...")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else if let ping = pingResults[remote.name] {
+                            HStack(spacing: 4) {
+                                Image(systemName: ping.isSuccess ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                                    .foregroundStyle(ping.isSuccess ? .green : .red)
+                                    .font(.caption)
+                                Text(ping.message)
+                                    .font(.caption)
+                                    .foregroundStyle(ping.isSuccess ? .green : .red)
+                                    .lineLimit(1)
+                            }
+                        } else {
+                            Text("Ready")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        
+                        Button {
+                            Task {
+                                pingingRemotes.insert(remote.name)
+                                let res = await syncManager.pingRemote(name: remote.name)
+                                pingResults[remote.name] = res
+                                pingingRemotes.remove(remote.name)
+                            }
+                        } label: {
+                            Label("Ping", systemImage: "network")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(pingingRemotes.contains(remote.name))
                     }
                     .padding(.vertical, 4)
                     .contextMenu {
@@ -758,7 +1109,27 @@ struct AccountsSettingsView: View {
                     Button {
                         showingAddAccountSheet = true
                     } label: {
-                        Label("Add Another Account", systemImage: "plus")
+                        Label("Add Account", systemImage: "plus")
+                    }
+                    
+                    Button {
+                        Task {
+                            for remote in syncManager.availableRemotes {
+                                pingingRemotes.insert(remote.name)
+                                let res = await syncManager.pingRemote(name: remote.name)
+                                pingResults[remote.name] = res
+                                pingingRemotes.remove(remote.name)
+                            }
+                        }
+                    } label: {
+                        Label("Ping All", systemImage: "network.badge.shield.half.filled")
+                    }
+                    .disabled(syncManager.availableRemotes.isEmpty)
+                    
+                    Button {
+                        syncManager.openTerminalConfig()
+                    } label: {
+                        Label("Terminal Setup...", systemImage: "terminal")
                     }
                     
                     Spacer()

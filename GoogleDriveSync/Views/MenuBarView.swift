@@ -52,6 +52,7 @@ struct MenuBarView: View {
         }
         .padding(12)
         .frame(width: 320)
+        .background(Color(nsColor: .windowBackgroundColor))
     }
     
     // MARK: - Sections
@@ -140,7 +141,7 @@ struct MenuBarView: View {
                                     .foregroundStyle(.yellow)
                                     .font(.system(size: 12))
                                 
-                                VStack(alignment: .leading, spacing: 2) {
+                                VStack(alignment: .leading, spacing: 4) {
                                     Text(folder.displayName)
                                         .font(.system(size: 11, weight: .medium))
                                     
@@ -149,6 +150,21 @@ struct MenuBarView: View {
                                         .foregroundStyle(.secondary)
                                         .lineLimit(expandedErrorID == folder.id ? nil : 2)
                                         .fixedSize(horizontal: false, vertical: true)
+                                    
+                                    if folder.syncMode == .bisync {
+                                        Button {
+                                            Task {
+                                                await syncManager.resyncFolder(folder)
+                                            }
+                                        } label: {
+                                            Label("Resync Baseline", systemImage: "arrow.clockwise")
+                                                .font(.system(size: 10, weight: .medium))
+                                        }
+                                        .buttonStyle(.borderedProminent)
+                                        .controlSize(.mini)
+                                        .disabled(syncManager.isSyncing)
+                                        .padding(.top, 2)
+                                    }
                                 }
                                 
                                 Spacer()
@@ -353,14 +369,38 @@ struct FolderRowView: View {
                 }
                 .disabled(syncManager.isSyncing)
                 
+                if folder.syncMode == .bisync {
+                    Button("Resync (Rebuild Baseline)") {
+                        Task {
+                            await syncManager.resyncFolder(folder)
+                        }
+                    }
+                    .disabled(syncManager.isSyncing)
+                }
+                
                 Divider()
                 
                 Button("Show in Finder") {
                     NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: folder.localPath)
                 }
                 
-                Button("Open Google Drive in Browser") {
-                    if let url = URL(string: "https://drive.google.com") {
+                Button("Open Cloud Storage in Browser") {
+                    let remoteLower = folder.remoteName.lowercased()
+                    let targetURL: String
+                    if remoteLower.contains("mega") {
+                        targetURL = "https://mega.nz"
+                    } else if remoteLower.contains("onedrive") {
+                        targetURL = "https://onedrive.live.com"
+                    } else if remoteLower.contains("dropbox") {
+                        targetURL = "https://dropbox.com"
+                    } else if remoteLower.contains("box") {
+                        targetURL = "https://app.box.com"
+                    } else if remoteLower.contains("pcloud") {
+                        targetURL = "https://my.pcloud.com"
+                    } else {
+                        targetURL = "https://drive.google.com"
+                    }
+                    if let url = URL(string: targetURL) {
                         NSWorkspace.shared.open(url)
                     }
                 }
